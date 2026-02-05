@@ -12,6 +12,7 @@ use utoipa::{Modify, OpenApi};
     paths(
         crate::api::handlers::health_handler,
         crate::api::handlers::jira_list_handler,
+        crate::api::handlers::chat_handler,
     ),
     components(
         schemas(
@@ -19,12 +20,16 @@ use utoipa::{Modify, OpenApi};
             crate::api::handlers::JiraIssueSummary,
             crate::api::handlers::JiraListResponse,
             crate::api::handlers::ErrorResponse,
+            crate::api::handlers::ChatRequest,
+            crate::api::handlers::ChatMessage,
+            crate::api::handlers::ChatResponse,
         )
     ),
     modifiers(&SecurityAddon),
     tags(
         (name = "system", description = "System health and status endpoints"),
-        (name = "jira", description = "Jira issue management endpoints")
+        (name = "jira", description = "Jira issue management endpoints"),
+        (name = "agent", description = "AI agent and chat endpoints")
     )
 )]
 pub struct ApiDoc;

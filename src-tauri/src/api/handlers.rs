@@ -8,6 +8,80 @@ use std::sync::Arc;
 
 use crate::state::{AccessLogEntry, AppState};
 
+// ============ Gemini API Types ============
+
+/// Request body for chat endpoint
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct ChatRequest {
+    /// The user's message to send to Gemini
+    pub message: String,
+    /// Optional conversation history for context
+    #[serde(default)]
+    pub history: Vec<ChatMessage>,
+}
+
+/// A single chat message in the conversation
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ChatMessage {
+    /// Role of the message sender: "user" or "model"
+    pub role: String,
+    /// The content of the message
+    pub content: String,
+}
+
+/// Response from the chat endpoint
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ChatResponse {
+    /// The AI's response message
+    pub response: String,
+    /// The updated conversation history
+    pub history: Vec<ChatMessage>,
+}
+
+/// Gemini API request structures
+#[derive(Debug, Serialize)]
+struct GeminiRequest {
+    contents: Vec<GeminiContent>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiContent {
+    role: String,
+    parts: Vec<GeminiPart>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeminiPart {
+    text: String,
+}
+
+/// Gemini API response structures
+#[derive(Debug, Deserialize)]
+struct GeminiResponse {
+    candidates: Option<Vec<GeminiCandidate>>,
+    error: Option<GeminiError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiCandidate {
+    content: GeminiResponseContent,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiResponseContent {
+    parts: Vec<GeminiResponsePart>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiResponsePart {
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GeminiError {
+    message: String,
+}
+
 // ============ Response Types ============
 
 /// Health check response
@@ -182,4 +256,154 @@ pub async fn clear_access_logs_handler(State(state): State<Arc<AppState>>) -> St
     state.clear_access_logs();
     log::info!("REST API: Access logs cleared");
     StatusCode::OK
+}
+
+// ============ Agent/Chat Handlers ============
+
+/// Chat with Gemini AI
+/// 
+/// Sends a message to Google Gemini and returns the AI response.
+/// Supports conversation history for multi-turn conversations.
+#[utoipa::path(
+    post,
+    path = "/agent/chat",
+    request_body = ChatRequest,
+    responses(
+        (status = 200, description = "Chat response from Gemini", body = ChatResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "agent"
+)]
+pub async fn chat_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<ChatRequest>,
+) -> Result<Json<ChatResponse>, (StatusCode, Json<ErrorResponse>)> {
+    log::info!("REST API: agent/chat called with message: {}...", 
+        &request.message.chars().take(50).collect::<String>());
+
+    // Check if Gemini API key is configured
+    if state.gemini_api_key.is_empty() || state.gemini_api_key == "YOUR_GEMINI_API_KEY_HERE" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Gemini API key not configured. Please set GEMINI_API_KEY in .env file.".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Build conversation contents for Gemini API
+    let mut contents: Vec<GeminiContent> = request
+        .history
+        .iter()
+        .map(|msg| GeminiContent {
+            role: msg.role.clone(),
+            parts: vec![GeminiPart { text: msg.content.clone() }],
+        })
+        .collect();
+
+    // Add the current user message
+    contents.push(GeminiContent {
+        role: "user".to_string(),
+        parts: vec![GeminiPart { text: request.message.clone() }],
+    });
+
+    let gemini_request = GeminiRequest { contents };
+
+    // Call Gemini API
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}",
+        state.gemini_api_key
+    );
+
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .json(&gemini_request)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("REST API: Failed to call Gemini API: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to call Gemini API: {}", e),
+                    code: 500,
+                }),
+            )
+        })?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| {
+        log::error!("REST API: Failed to read Gemini response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to read Gemini response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    if !status.is_success() {
+        log::error!("REST API: Gemini API error ({}): {}", status, response_text);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Gemini API error: {}", response_text),
+                code: status.as_u16(),
+            }),
+        ));
+    }
+
+    let gemini_response: GeminiResponse = serde_json::from_str(&response_text).map_err(|e| {
+        log::error!("REST API: Failed to parse Gemini response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to parse Gemini response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    // Check for API error in response
+    if let Some(error) = gemini_response.error {
+        log::error!("REST API: Gemini API returned error: {}", error.message);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: error.message,
+                code: 500,
+            }),
+        ));
+    }
+
+    // Extract the response text
+    let ai_response = gemini_response
+        .candidates
+        .and_then(|c| c.into_iter().next())
+        .map(|c| c.content.parts.into_iter().map(|p| p.text).collect::<Vec<_>>().join(""))
+        .unwrap_or_else(|| "No response from Gemini".to_string());
+
+    log::info!("REST API: Gemini responded with {} chars", ai_response.len());
+
+    // Build updated history
+    let mut updated_history = request.history.clone();
+    updated_history.push(ChatMessage {
+        role: "user".to_string(),
+        content: request.message,
+    });
+    updated_history.push(ChatMessage {
+        role: "model".to_string(),
+        content: ai_response.clone(),
+    });
+
+    Ok(Json(ChatResponse {
+        response: ai_response,
+        history: updated_history,
+    }))
 }

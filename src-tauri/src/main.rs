@@ -483,6 +483,15 @@ fn main() {
     let jira_settings = SETTINGS.lock().unwrap().clone().unwrap();
     let jira_token = API_TOKEN.lock().unwrap().clone().unwrap();
 
+    // Get Gemini API key from environment
+    let gemini_api_key = std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| {
+        info!("GEMINI_API_KEY not set in environment");
+        "YOUR_GEMINI_API_KEY_HERE".to_string()
+    });
+    if gemini_api_key != "YOUR_GEMINI_API_KEY_HERE" {
+        info!("Gemini API key configured");
+    }
+
     // Generate random auth token for this session
     let rest_auth_token = generate_auth_token();
     info!("Generated REST API auth token");
@@ -493,6 +502,7 @@ fn main() {
         jira_settings.base_url,
         jira_settings.email,
         jira_token,
+        gemini_api_key,
     );
 
     // Store app_state globally for Tauri commands to access

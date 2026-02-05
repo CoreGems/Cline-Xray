@@ -1,7 +1,7 @@
 use crate::api::{handlers, middleware::{auth_middleware, access_log_middleware}};
 use crate::openapi::ApiDoc;
 use crate::state::AppState;
-use axum::{middleware, response::Json, routing::{get, delete}, Router};
+use axum::{middleware, response::Json, routing::{get, delete, post}, Router};
 use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use utoipa::OpenApi;
@@ -24,6 +24,7 @@ pub fn create_router(state: Arc<AppState>) -> Router {
     // Protected routes (require Bearer token auth)
     let protected_routes = Router::new()
         .route("/jira/list", get(handlers::jira_list_handler))
+        .route("/agent/chat", post(handlers::chat_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
