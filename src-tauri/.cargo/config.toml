@@ -1,0 +1,8 @@
+[build]
+# Limit parallel compilation jobs to reduce memory usage (single job for low memory)
+jobs = 1
+
+[env]
+# Limit codegen units to reduce memory usage
+CARGO_PROFILE_DEV_CODEGEN_UNITS = "1"
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1"

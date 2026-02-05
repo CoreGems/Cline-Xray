@@ -1,0 +1,1 @@
+cargo clean --manifest-path d:\Users\obuzunov\myg\jira-dashboard\src-tauri\Cargo.toml

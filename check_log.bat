@@ -1,0 +1,1 @@
+type "D:\Users\obuzunov\AppData\Local\Temp\1\cline\background-1769518975673-253h6e6.log" 2>&1 | findstr /n "." | findstr /r "^[0-9]*[0-9]:" | more +100

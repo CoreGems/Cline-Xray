@@ -1,0 +1,1 @@
+npm run tauri build 2>&1
