@@ -1,10 +1,17 @@
 // Tab components index
 // Add new tab exports here as they are created
 
-export { default as MyJirasTab } from './MyJirasTab.svelte';
-export { default as ActivityTab } from './ActivityTab.svelte';
-export { default as ApiTab } from './ApiTab.svelte';
-export { default as AgentTab } from './AgentTab.svelte';
+// My Jiras tab is now a modular directory
+export { MyJirasTab } from './my-jiras';
+
+// Activity tab is now a modular directory
+export { ActivityTab } from './activity';
+
+// API tab is now a modular directory
+export { ApiTab } from './api';
+
+// Agent tab is now a modular directory
+export { AgentTab } from './agent';
 
 // Tab definitions for navigation
 export type TabId = 'my-jiras' | 'activity' | 'api' | 'agent';

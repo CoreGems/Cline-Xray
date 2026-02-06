@@ -19,7 +19,9 @@ pub fn create_router(state: Arc<AppState>) -> Router {
         .route("/health", get(handlers::health_handler))
         .route("/openapi.json", get(openapi_handler))
         .route("/access-logs", get(handlers::access_logs_handler))
-        .route("/access-logs", delete(handlers::clear_access_logs_handler));
+        .route("/access-logs", delete(handlers::clear_access_logs_handler))
+        .route("/inference-logs", get(handlers::inference_logs_handler))
+        .route("/inference-logs", delete(handlers::clear_inference_logs_handler));
 
     // Protected routes (require Bearer token auth)
     let protected_routes = Router::new()

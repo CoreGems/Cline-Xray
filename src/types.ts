@@ -50,3 +50,22 @@ export interface AccessLogEntry {
   durationMs: number;
   clientIp: string;
 }
+
+// Inference log entry for AI model activity tracking
+export interface InferenceLogEntry {
+  id: number;
+  timestamp: string;
+  provider: string;           // e.g., "gemini", "openai"
+  model: string;              // e.g., "gemini-2.0-flash"
+  requestType: string;        // e.g., "chat", "completion"
+  success: boolean;
+  statusCode: number | null;
+  durationMs: number;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
+  errorMessage: string | null;
+  systemPrompt: string | null;
+  userMessagePreview: string | null;
+  metadata: Record<string, unknown> | null;
+}

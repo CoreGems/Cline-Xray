@@ -6,7 +6,8 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::state::{AccessLogEntry, AppState};
+use crate::state::{AccessLogEntry, InferenceLogEntry, AppState};
+use std::time::Instant;
 
 // ============ Gemini API Types ============
 
@@ -258,6 +259,50 @@ pub async fn clear_access_logs_handler(State(state): State<Arc<AppState>>) -> St
     StatusCode::OK
 }
 
+// ============ Inference Log Handlers ============
+
+/// Response for inference logs endpoint
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InferenceLogsResponse {
+    pub logs: Vec<InferenceLogEntry>,
+    pub total: usize,
+}
+
+/// Get inference logs
+/// 
+/// Returns a list of all AI inference log entries (Gemini API calls).
+#[utoipa::path(
+    get,
+    path = "/inference-logs",
+    responses(
+        (status = 200, description = "Inference log entries", body = InferenceLogsResponse)
+    ),
+    tag = "system"
+)]
+pub async fn inference_logs_handler(State(state): State<Arc<AppState>>) -> Json<InferenceLogsResponse> {
+    let logs = state.get_inference_logs();
+    let total = logs.len();
+    Json(InferenceLogsResponse { logs, total })
+}
+
+/// Clear inference logs
+/// 
+/// Clears all AI inference log entries.
+#[utoipa::path(
+    delete,
+    path = "/inference-logs",
+    responses(
+        (status = 200, description = "Inference logs cleared")
+    ),
+    tag = "system"
+)]
+pub async fn clear_inference_logs_handler(State(state): State<Arc<AppState>>) -> StatusCode {
+    state.clear_inference_logs();
+    log::info!("REST API: Inference logs cleared");
+    StatusCode::OK
+}
+
 // ============ Agent/Chat Handlers ============
 
 /// Chat with Gemini AI
@@ -280,11 +325,29 @@ pub async fn chat_handler(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let start_time = Instant::now();
+    let model = "gemini-2.0-flash";
+    let user_message_preview: String = request.message.chars().take(100).collect();
+    
     log::info!("REST API: agent/chat called with message: {}...", 
         &request.message.chars().take(50).collect::<String>());
 
     // Check if Gemini API key is configured
     if state.gemini_api_key.is_empty() || state.gemini_api_key == "YOUR_GEMINI_API_KEY_HERE" {
+        // Log failed inference attempt
+        state.add_inference_log(
+            "gemini".to_string(),
+            model.to_string(),
+            "chat".to_string(),
+            false,
+            Some(400),
+            start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some("Gemini API key not configured".to_string()),
+            None,
+            Some(user_message_preview),
+            None,
+        );
         return Err((
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
@@ -315,8 +378,8 @@ pub async fn chat_handler(
     // Call Gemini API
     let client = reqwest::Client::new();
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}",
-        state.gemini_api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, state.gemini_api_key
     );
 
     let response = client
@@ -327,6 +390,20 @@ pub async fn chat_handler(
         .await
         .map_err(|e| {
             log::error!("REST API: Failed to call Gemini API: {}", e);
+            // Log failed inference
+            state.add_inference_log(
+                "gemini".to_string(),
+                model.to_string(),
+                "chat".to_string(),
+                false,
+                None,
+                start_time.elapsed().as_millis() as u64,
+                None, None, None,
+                Some(format!("HTTP error: {}", e)),
+                None,
+                Some(user_message_preview.clone()),
+                None,
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
@@ -339,6 +416,20 @@ pub async fn chat_handler(
     let status = response.status();
     let response_text = response.text().await.map_err(|e| {
         log::error!("REST API: Failed to read Gemini response: {}", e);
+        // Log failed inference
+        state.add_inference_log(
+            "gemini".to_string(),
+            model.to_string(),
+            "chat".to_string(),
+            false,
+            Some(status.as_u16()),
+            start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("Failed to read response: {}", e)),
+            None,
+            Some(user_message_preview.clone()),
+            None,
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -350,6 +441,20 @@ pub async fn chat_handler(
 
     if !status.is_success() {
         log::error!("REST API: Gemini API error ({}): {}", status, response_text);
+        // Log failed inference
+        state.add_inference_log(
+            "gemini".to_string(),
+            model.to_string(),
+            "chat".to_string(),
+            false,
+            Some(status.as_u16()),
+            start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("API error: {}", response_text)),
+            None,
+            Some(user_message_preview),
+            None,
+        );
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -361,6 +466,20 @@ pub async fn chat_handler(
 
     let gemini_response: GeminiResponse = serde_json::from_str(&response_text).map_err(|e| {
         log::error!("REST API: Failed to parse Gemini response: {}", e);
+        // Log failed inference
+        state.add_inference_log(
+            "gemini".to_string(),
+            model.to_string(),
+            "chat".to_string(),
+            false,
+            Some(status.as_u16()),
+            start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("Failed to parse response: {}", e)),
+            None,
+            Some(user_message_preview.clone()),
+            None,
+        );
         (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -373,6 +492,20 @@ pub async fn chat_handler(
     // Check for API error in response
     if let Some(error) = gemini_response.error {
         log::error!("REST API: Gemini API returned error: {}", error.message);
+        // Log failed inference
+        state.add_inference_log(
+            "gemini".to_string(),
+            model.to_string(),
+            "chat".to_string(),
+            false,
+            Some(status.as_u16()),
+            start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(error.message.clone()),
+            None,
+            Some(user_message_preview),
+            None,
+        );
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
@@ -389,7 +522,37 @@ pub async fn chat_handler(
         .map(|c| c.content.parts.into_iter().map(|p| p.text).collect::<Vec<_>>().join(""))
         .unwrap_or_else(|| "No response from Gemini".to_string());
 
-    log::info!("REST API: Gemini responded with {} chars", ai_response.len());
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+    log::info!("REST API: Gemini responded with {} chars in {}ms", ai_response.len(), duration_ms);
+
+    // Log successful inference with full details
+    state.add_inference_log(
+        "gemini".to_string(),
+        model.to_string(),
+        "chat".to_string(),
+        true,
+        Some(200),
+        duration_ms,
+        None, None, None, // Token counts not available from simple API
+        None,
+        None, // No system prompt in this simple chat
+        Some(user_message_preview),
+        Some(serde_json::json!({
+            "question": request.message,
+            "response": ai_response.clone(),
+            "response_length": ai_response.len(),
+            "history_length": request.history.len(),
+            "history": request.history.iter().map(|m| serde_json::json!({
+                "role": m.role,
+                "content": m.content
+            })).collect::<Vec<_>>(),
+            "api_endpoint": format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", model),
+            "generation_config": {
+                "temperature": null,
+                "max_output_tokens": null
+            }
+        })),
+    );
 
     // Build updated history
     let mut updated_history = request.history.clone();

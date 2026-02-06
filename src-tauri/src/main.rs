@@ -14,7 +14,7 @@ use jira::{IssueDetails, IssueSummary, JiraClient, JiraSettings, SearchResult};
 use log::{error, info};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use state::{AccessLogEntry, AppState};
+use state::{AccessLogEntry, InferenceLogEntry, AppState};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::{Arc, Mutex};
@@ -368,6 +368,30 @@ fn clear_access_logs() -> Result<(), String> {
     Ok(())
 }
 
+/// Tauri command: Get inference logs
+#[tauri::command]
+fn get_inference_logs() -> Result<Vec<InferenceLogEntry>, String> {
+    let state = APP_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock app state: {}", e))?;
+    match state.as_ref() {
+        Some(app_state) => Ok(app_state.get_inference_logs()),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// Tauri command: Clear inference logs
+#[tauri::command]
+fn clear_inference_logs() -> Result<(), String> {
+    let state = APP_STATE
+        .lock()
+        .map_err(|e| format!("Failed to lock app state: {}", e))?;
+    if let Some(app_state) = state.as_ref() {
+        app_state.clear_inference_logs();
+    }
+    Ok(())
+}
+
 /// Generate a secure random auth token
 fn generate_auth_token() -> String {
     use rand::Rng;
@@ -479,17 +503,38 @@ fn main() {
     logging::init_logging();
     info!("Tauri application starting...");
 
+    // Load .env file from project root
+    // Try multiple paths since we might be running from different directories
+    let env_paths = vec![
+        std::path::PathBuf::from(".env"),           // Current dir
+        std::path::PathBuf::from("../.env"),        // Parent dir (when running from src-tauri)
+    ];
+    
+    for env_path in env_paths {
+        if env_path.exists() {
+            match dotenvy::from_path(&env_path) {
+                Ok(_) => {
+                    info!("Loaded .env file from: {:?}", env_path);
+                    break;
+                }
+                Err(e) => {
+                    info!("Failed to load .env from {:?}: {}", env_path, e);
+                }
+            }
+        }
+    }
+
     // Get Jira config for REST server
     let jira_settings = SETTINGS.lock().unwrap().clone().unwrap();
     let jira_token = API_TOKEN.lock().unwrap().clone().unwrap();
 
-    // Get Gemini API key from environment
+    // Get Gemini API key from environment (now loaded from .env)
     let gemini_api_key = std::env::var("GEMINI_API_KEY").unwrap_or_else(|_| {
         info!("GEMINI_API_KEY not set in environment");
         "YOUR_GEMINI_API_KEY_HERE".to_string()
     });
     if gemini_api_key != "YOUR_GEMINI_API_KEY_HERE" {
-        info!("Gemini API key configured");
+        info!("Gemini API key configured ({}...)", &gemini_api_key[..8.min(gemini_api_key.len())]);
     }
 
     // Generate random auth token for this session
@@ -549,6 +594,8 @@ fn main() {
             get_api_info,
             get_access_logs,
             clear_access_logs,
+            get_inference_logs,
+            clear_inference_logs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
