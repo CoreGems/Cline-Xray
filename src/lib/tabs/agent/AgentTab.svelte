@@ -1,12 +1,14 @@
 <script lang="ts">
   // Agent Tab - Main container with subtab navigation
   import ChatSubtab from "./ChatSubtab.svelte";
+  import AgentChatSubtab from "./AgentChatSubtab.svelte";
   import type { AgentSubTab, SubTabDefinition } from "./types";
   
   // Subtab state
-  let activeSubTab: AgentSubTab = $state('Chat');
+  let activeSubTab: AgentSubTab = $state('Agent Chat');
   
   const subTabs: SubTabDefinition[] = [
+    { id: 'Agent Chat', label: 'Agent Chat' },
     { id: 'Chat', label: 'Chat' }
   ];
 </script>
@@ -31,5 +33,7 @@
   <!-- Subtab Content -->
   {#if activeSubTab === 'Chat'}
     <ChatSubtab />
+  {:else if activeSubTab === 'Agent Chat'}
+    <AgentChatSubtab />
   {/if}
 </div>

@@ -1,13 +1,17 @@
 <script lang="ts">
   // API Tab - Main container with subtab navigation
   import RESTSubtab from "./RESTSubtab.svelte";
+  import ToolsSubtab from "./ToolsSubtab.svelte";
+  import ToolsConsoleSubtab from "./ToolsConsoleSubtab.svelte";
   import type { ApiSubTab, SubTabDefinition } from "./types";
   
   // Subtab state
-  let activeSubTab: ApiSubTab = $state('REST');
+  let activeSubTab: ApiSubTab | 'Console' = $state('REST');
   
-  const subTabs: SubTabDefinition[] = [
-    { id: 'REST', label: 'REST' }
+  const subTabs: (SubTabDefinition | { id: 'Console', label: string })[] = [
+    { id: 'REST', label: 'REST' },
+    { id: 'Tools', label: 'Tools' },
+    { id: 'Console', label: 'Tools Console' }
   ];
 </script>
 
@@ -31,5 +35,9 @@
   <!-- Subtab Content -->
   {#if activeSubTab === 'REST'}
     <RESTSubtab />
+  {:else if activeSubTab === 'Tools'}
+    <ToolsSubtab />
+  {:else if activeSubTab === 'Console'}
+    <ToolsConsoleSubtab />
   {/if}
 </div>

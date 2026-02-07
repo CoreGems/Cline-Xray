@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { open } from "@tauri-apps/plugin-shell";
   import type { IssueDetails } from "../../types";
   import { getStatusClass } from "./utils";
   import JiraMetadataGrid from "./JiraMetadataGrid.svelte";
@@ -18,6 +19,11 @@
   // Details pane tab state
   type DetailTab = 'details';
   let activeDetailTab: DetailTab = $state('details');
+
+  // Open URL in browser
+  async function openInBrowser(url: string) {
+    await open(url);
+  }
 </script>
 
 <div class="flex-1 h-full flex flex-col bg-white min-w-0">
@@ -59,23 +65,39 @@
               {issue.resolution}
             </span>
           {/if}
-          {#if onRefresh}
+          <div class="ml-auto flex items-center gap-1">
             <button
-              onclick={onRefresh}
-              disabled={loading}
-              class="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed ml-auto"
-              title="Refresh issue details"
+              onclick={() => openInBrowser(`https://sonymusicpub.atlassian.net/browse/${issue.key}`)}
+              class="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors"
+              title="Open in browser"
             >
               <svg 
-                class="w-5 h-5 {loading ? 'animate-spin' : ''}" 
+                class="w-5 h-5" 
                 fill="none" 
                 stroke="currentColor" 
                 viewBox="0 0 24 24"
               >
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
               </svg>
             </button>
-          {/if}
+            {#if onRefresh}
+              <button
+                onclick={onRefresh}
+                disabled={loading}
+                class="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                title="Refresh issue details"
+              >
+                <svg 
+                  class="w-5 h-5 {loading ? 'animate-spin' : ''}" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  viewBox="0 0 24 24"
+                >
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                </svg>
+              </button>
+            {/if}
+          </div>
         </div>
         <h1 class="text-2xl font-bold text-gray-900 mb-4">{issue.summary}</h1>
         

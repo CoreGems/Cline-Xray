@@ -53,6 +53,12 @@ try {
     Write-Host "  Title:   $($spec.info.title)" -ForegroundColor White
     Write-Host "  Version: $($spec.info.version)" -ForegroundColor White
     Write-Host "  OpenAPI: $($spec.openapi)" -ForegroundColor White
+    
+    # Show available tags
+    if ($spec.tags -and $spec.tags.Count -gt 0) {
+        $tagNames = ($spec.tags | ForEach-Object { $_.name }) -join ", "
+        Write-Host "  Tags:    $tagNames" -ForegroundColor Cyan
+    }
     Write-Host ""
     
     # Parse and list all endpoints
@@ -87,10 +93,10 @@ try {
                 $authRequired = $true
             }
             
-            # Get tag
-            $tag = ""
+            # Get all tags
+            $tags = @()
             if ($methodDetails.tags -and $methodDetails.tags.Count -gt 0) {
-                $tag = $methodDetails.tags[0]
+                $tags = $methodDetails.tags
             }
             
             # Get summary/description
@@ -112,15 +118,23 @@ try {
                 Write-Host -NoNewline "[AUTH]" -ForegroundColor DarkYellow
             }
             
-            if ($tag) {
+            # Show all tags
+            if ($tags.Count -gt 0) {
                 Write-Host -NoNewline " "
-                Write-Host -NoNewline "($tag)" -ForegroundColor DarkCyan
+                $tagList = $tags -join ", "
+                Write-Host -NoNewline "[$tagList]" -ForegroundColor Cyan
             }
             
             Write-Host ""
             
             if ($summary) {
                 Write-Host "           $summary" -ForegroundColor Gray
+            }
+            
+            # Show tags on separate line
+            if ($tags.Count -gt 0) {
+                $tagList = $tags -join ", "
+                Write-Host "           Tags: $tagList" -ForegroundColor Cyan
             }
             
             # Show response codes

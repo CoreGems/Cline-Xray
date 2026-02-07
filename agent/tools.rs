@@ -94,6 +94,188 @@ impl ToolDefinition {
     }
 }
 
+/// Paths to skip when auto-generating tools from OpenAPI.
+/// These should NOT become agent tools.
+const SKIP_PATHS: &[&str] = &[
+    "/agent/chat",     // This IS the agent - don't recurse
+    "/openapi.json",   // Meta endpoint - not useful as a tool
+];
+
+/// Auto-generate tool definitions from the OpenAPI spec.
+///
+/// Each OpenAPI path+method becomes one tool, with naming convention:
+///   `{method}_{path_segments}` — e.g. GET /jira/list → "get_jira_list"
+///
+/// Skips endpoints in SKIP_PATHS (the agent itself, meta endpoints).
+///
+/// # How it works
+/// 1. Serializes the OpenAPI spec to JSON (avoids complex utoipa type introspection)
+/// 2. Iterates over all paths and HTTP methods
+/// 3. Extracts parameters from query params and request body schemas
+/// 4. Returns vendor-neutral ToolDefinition structs
+///
+/// # Example
+/// ```rust,ignore
+/// let tools = tools_from_openapi();
+/// // tools = [
+/// //   ToolDefinition { name: "get_health", ... },
+/// //   ToolDefinition { name: "get_jira_list", params: [jql, maxResults], ... },
+/// //   ToolDefinition { name: "get_agent_models", ... },
+/// // ]
+/// ```
+pub fn tools_from_openapi() -> Vec<ToolDefinition> {
+    use crate::openapi::PublicApiDoc;
+    use utoipa::OpenApi;
+
+    // Serialize OpenAPI spec to JSON for easier parsing
+    let spec = PublicApiDoc::openapi();
+    let spec_json = match serde_json::to_value(&spec) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("Failed to serialize OpenAPI spec: {}", e);
+            return Vec::new();
+        }
+    };
+
+    let mut tools = Vec::new();
+
+    let paths = match spec_json.get("paths").and_then(|p| p.as_object()) {
+        Some(p) => p,
+        None => return tools,
+    };
+
+    for (path, methods) in paths {
+        // Skip non-tool endpoints
+        if SKIP_PATHS.contains(&path.as_str()) {
+            continue;
+        }
+
+        let methods_obj = match methods.as_object() {
+            Some(m) => m,
+            None => continue,
+        };
+
+        for (method, operation) in methods_obj {
+            // Skip non-operation keys (e.g., "summary", "description", "parameters")
+            if !["get", "post", "put", "delete", "patch"].contains(&method.as_str()) {
+                continue;
+            }
+
+            // Build tool name: get_jira_list, get_health, get_agent_models
+            let path_slug = path
+                .trim_start_matches('/')
+                .replace('/', "_")
+                .replace('{', "")
+                .replace('}', "");
+            let tool_name = format!("{}_{}", method, path_slug);
+
+            let description = operation
+                .get("summary")
+                .and_then(|s| s.as_str())
+                .or_else(|| operation.get("description").and_then(|s| s.as_str()))
+                .unwrap_or("No description")
+                .to_string();
+
+            let mut tool = ToolDefinition::new(&tool_name, &description);
+
+            // Extract query/path parameters
+            if let Some(params) = operation.get("parameters").and_then(|p| p.as_array()) {
+                for param in params {
+                    let name = param.get("name").and_then(|n| n.as_str()).unwrap_or("");
+                    let schema_type = param
+                        .get("schema")
+                        .and_then(|s| s.get("type"))
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("string");
+                    let param_desc = param
+                        .get("description")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("");
+                    let required = param
+                        .get("required")
+                        .and_then(|r| r.as_bool())
+                        .unwrap_or(false);
+
+                    if !name.is_empty() {
+                        tool.parameters.push(ToolParameter {
+                            name: name.to_string(),
+                            param_type: schema_type.to_string(),
+                            description: param_desc.to_string(),
+                            required,
+                            default: None,
+                            enum_values: None,
+                        });
+                    }
+                }
+            }
+
+            // Extract request body parameters (for POST endpoints)
+            if let Some(request_body) = operation.get("requestBody") {
+                let schema = request_body
+                    .get("content")
+                    .and_then(|c| c.get("application/json"))
+                    .and_then(|j| j.get("schema"));
+
+                if let Some(schema) = schema {
+                    // Resolve $ref if present
+                    let resolved = if let Some(ref_path) = schema.get("$ref").and_then(|r| r.as_str()) {
+                        resolve_json_ref(&spec_json, ref_path)
+                    } else {
+                        Some(schema)
+                    };
+
+                    if let Some(resolved_schema) = resolved {
+                        let required_fields: Vec<&str> = resolved_schema
+                            .get("required")
+                            .and_then(|r| r.as_array())
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                            .unwrap_or_default();
+
+                        if let Some(properties) = resolved_schema.get("properties").and_then(|p| p.as_object()) {
+                            for (prop_name, prop_schema) in properties {
+                                let prop_type = prop_schema
+                                    .get("type")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or("string");
+                                let prop_desc = prop_schema
+                                    .get("description")
+                                    .and_then(|d| d.as_str())
+                                    .unwrap_or("");
+
+                                tool.parameters.push(ToolParameter {
+                                    name: prop_name.clone(),
+                                    param_type: prop_type.to_string(),
+                                    description: prop_desc.to_string(),
+                                    required: required_fields.contains(&prop_name.as_str()),
+                                    default: None,
+                                    enum_values: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            tools.push(tool);
+        }
+    }
+
+    tools
+}
+
+/// Resolve a JSON $ref pointer (e.g., "#/components/schemas/ChatRequest")
+fn resolve_json_ref<'a>(spec: &'a serde_json::Value, ref_path: &str) -> Option<&'a serde_json::Value> {
+    if !ref_path.starts_with("#/") {
+        return None;
+    }
+    let parts: Vec<&str> = ref_path[2..].split('/').collect();
+    let mut current = spec;
+    for part in parts {
+        current = current.get(part)?;
+    }
+    Some(current)
+}
+
 /// Get all tool definitions available to the agent
 ///
 /// SECURITY: These tools are GPT-safe:

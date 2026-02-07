@@ -1,18 +1,34 @@
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
-/// OpenAPI specification for the Jira Dashboard REST API
+// ============================================================================
+// PUBLIC API SPECIFICATION
+// ============================================================================
+
+/// Public OpenAPI specification for the Jira Dashboard REST API
+/// 
+/// This spec is served at `/openapi.json` and contains endpoints intended
+/// for external consumers and integrations.
 #[derive(OpenApi)]
 #[openapi(
     info(
         title = "Jira Dashboard API",
         version = "1.0.0",
-        description = "REST API for Jira Dashboard application"
+        description = "Public REST API for Jira Dashboard application"
     ),
     paths(
         crate::api::handlers::health_handler,
         crate::api::handlers::jira_list_handler,
         crate::api::handlers::chat_handler,
+        crate::api::handlers::list_models_handler,
+        // Tool runtime - Agent-facing endpoints only
+        crate::tool_runtime::handlers::list_tools_handler,      // GET /tools - Discovery
+        crate::tool_runtime::handlers::invoke_tool_handler,     // POST /tools/invoke - Execution
+        // Shadow Git / Changes
+        crate::shadow_git::handlers::list_workspaces_handler,   // GET /changes/workspaces
+        crate::shadow_git::handlers::list_tasks_handler,        // GET /changes/tasks
+        crate::shadow_git::handlers::list_steps_handler,        // GET /changes/tasks/:taskId/steps
+        crate::shadow_git::handlers::step_diff_handler,         // GET /changes/tasks/:taskId/steps/:index/diff
     ),
     components(
         schemas(
@@ -23,16 +39,109 @@ use utoipa::{Modify, OpenApi};
             crate::api::handlers::ChatRequest,
             crate::api::handlers::ChatMessage,
             crate::api::handlers::ChatResponse,
+            crate::api::handlers::GeminiModel,
+            crate::api::handlers::GeminiModelsResponse,
+            // Tool runtime - Agent-facing schemas only
+            crate::tool_runtime::ToolInvokeRequest,
+            crate::tool_runtime::ToolCallSource,
+            crate::tool_runtime::ValidationResult,
+            crate::tool_runtime::ToolConfig,
+            crate::tool_runtime::ArgClamp,
+            crate::tool_runtime::ToolInfo,
+            crate::tool_runtime::handlers::ToolInvokeResponse,
+            crate::tool_runtime::handlers::ToolsListResponse,
+            crate::tool_runtime::handlers::ToolErrorResponse,
+            // Shadow Git / Changes schemas
+            crate::shadow_git::WorkspaceInfo,
+            crate::shadow_git::WorkspacesResponse,
+            crate::shadow_git::ClineTaskSummary,
+            crate::shadow_git::TasksResponse,
+            crate::shadow_git::CheckpointStep,
+            crate::shadow_git::StepsResponse,
+            crate::shadow_git::DiffFile,
+            crate::shadow_git::DiffResult,
+            crate::shadow_git::handlers::ChangesErrorResponse,
         )
     ),
     modifiers(&SecurityAddon),
     tags(
         (name = "system", description = "System health and status endpoints"),
         (name = "jira", description = "Jira issue management endpoints"),
-        (name = "agent", description = "AI agent and chat endpoints")
+        (name = "agent", description = "AI agent and chat endpoints"),
+        (name = "tools", description = "Tool discovery and execution endpoints for AI agents"),
+        (name = "tool", description = "APIs suitable for AI agent tool use"),
+        (name = "changes", description = "Cline shadow Git checkpoint discovery and diff endpoints")
     )
 )]
-pub struct ApiDoc;
+pub struct PublicApiDoc;
+
+// ============================================================================
+// ADMIN API SPECIFICATION
+// ============================================================================
+
+/// Admin/Internal OpenAPI specification for the Jira Dashboard
+/// 
+/// This spec is served at `/openapi_admin.json` and contains internal
+/// endpoints used by the application's UI for diagnostics and logging.
+/// 
+/// **Security Note:** This spec is intentionally NOT auto-discoverable.
+/// External API scanners looking for `/openapi.json` will not find these endpoints.
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Jira Dashboard Admin API",
+        version = "1.0.0",
+        description = "Internal admin API for Jira Dashboard diagnostics and logging. Not intended for external use."
+    ),
+    paths(
+        // Logging endpoints
+        crate::api::handlers::access_logs_handler,
+        crate::api::handlers::clear_access_logs_handler,
+        crate::api::handlers::inference_logs_handler,
+        crate::api::handlers::clear_inference_logs_handler,
+        // Tool runtime admin endpoints
+        crate::tool_runtime::handlers::get_tool_logs_handler,
+        crate::tool_runtime::handlers::clear_tool_logs_handler,
+        crate::tool_runtime::handlers::get_config_handler,
+        crate::tool_runtime::handlers::update_config_handler,
+        crate::tool_runtime::handlers::configure_tool_handler,
+        crate::tool_runtime::handlers::get_circuit_breakers_handler,
+        crate::tool_runtime::handlers::reset_circuit_breakers_handler,
+        crate::tool_runtime::handlers::reset_tool_circuit_breaker_handler,
+        crate::tool_runtime::handlers::get_fixtures_handler,
+        crate::tool_runtime::handlers::import_fixtures_handler,
+        crate::tool_runtime::handlers::clear_fixtures_handler,
+        crate::tool_runtime::handlers::enable_all_tools_handler,
+        crate::tool_runtime::handlers::disable_all_tools_handler,
+    ),
+    components(
+        schemas(
+            crate::api::handlers::AccessLogsResponse,
+            crate::api::handlers::InferenceLogsResponse,
+            // Tool runtime admin schemas
+            crate::tool_runtime::ToolCallResult,
+            crate::tool_runtime::GlobalRuntimeConfig,
+            crate::tool_runtime::ToolExecutionLog,
+            crate::tool_runtime::CircuitBreakerState,
+            crate::tool_runtime::CircuitState,
+            crate::tool_runtime::handlers::ToolExecutionLogsResponse,
+            crate::tool_runtime::handlers::RuntimeConfigResponse,
+            crate::tool_runtime::handlers::CircuitBreakerStatusResponse,
+            crate::tool_runtime::handlers::FixturesResponse,
+            crate::tool_runtime::handlers::UpdateGlobalConfigRequest,
+            crate::tool_runtime::handlers::ConfigureToolRequest,
+        )
+    ),
+    tags(
+        (name = "admin", description = "Internal admin and diagnostic endpoints"),
+        (name = "tools", description = "Tool runtime admin endpoints - configuration, logging, circuit breakers, fixtures")
+    )
+)]
+pub struct AdminApiDoc;
+
+// ============================================================================
+// SECURITY ADDON (shared)
+// ============================================================================
 
 struct SecurityAddon;
 

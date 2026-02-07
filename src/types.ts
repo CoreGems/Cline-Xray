@@ -6,6 +6,7 @@ export interface IssueSummary {
   statusCategory: string;
   assignee: string | null;
   priority: string;
+  issueType: string;
   updated: string;
 }
 
@@ -69,3 +70,29 @@ export interface InferenceLogEntry {
   userMessagePreview: string | null;
   metadata: Record<string, unknown> | null;
 }
+
+// Agent settings configuration
+export interface AgentSettings {
+  /** Required generation methods for filtering models (e.g., ["generateContent"]) */
+  requiredMethods: string[];
+  /** Whether to only show text generation models */
+  filterTextGenerationOnly: boolean;
+  /** Keywords to exclude models by name/description (case-insensitive) */
+  excludeKeywords: string[];
+}
+
+// Default agent settings - exclude common image/video/audio/embedding model keywords
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  requiredMethods: ["generateContent"],
+  filterTextGenerationOnly: true,
+  excludeKeywords: [
+    "imagen",      // Image generation models
+    "veo",         // Video generation models
+    "banana",      // Nano Banana (image preview)
+    "audio",       // Audio models
+    "embedding",   // Embedding models (not for generation)
+    "robotics",    // Robotics models
+    "aqa",         // Attributed Question Answering
+    "image preview", // Image preview models
+  ]
+};

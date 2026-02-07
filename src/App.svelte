@@ -3,7 +3,7 @@
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import { jiraStore } from "./lib/stores/jiraStore.svelte";
-  import { MyJirasTab, ActivityTab, ApiTab, AgentTab, type TabId } from "./lib/tabs";
+  import { MyJirasTab, ActivityTab, ApiTab, AgentTab, ChangesTab, type TabId } from "./lib/tabs";
   import type { JiraSettings } from "./types";
 
   // Tab state
@@ -86,6 +86,8 @@
         <ApiTab />
       {:else if activeTab === 'agent'}
         <AgentTab />
+      {:else if activeTab === 'changes'}
+        <ChangesTab />
       {/if}
     </div>
   {/if}

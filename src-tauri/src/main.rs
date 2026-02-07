@@ -7,7 +7,9 @@ mod jira;
 mod logging;
 mod openapi;
 mod server;
+mod shadow_git;
 mod state;
+mod tool_runtime;
 
 use config::get_config_dir;
 use jira::{IssueDetails, IssueSummary, JiraClient, JiraSettings, SearchResult};
@@ -465,6 +467,7 @@ fn save_api_info_to_file(api_info: &ApiInfo) -> Result<(), String> {
 /// SECURITY: Always binds to 127.0.0.1, never 0.0.0.0
 fn start_rest_server(app_state: Arc<AppState>) -> Result<String, String> {
     use tokio::net::TcpListener;
+    use utoipa::OpenApi;
 
     let runtime = tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?;
@@ -476,7 +479,18 @@ fn start_rest_server(app_state: Arc<AppState>) -> Result<String, String> {
         let actual_addr = listener.local_addr()
             .map_err(|e| format!("Failed to get local address: {}", e))?;
 
-        let app = server::create_router(app_state);
+        // Create ToolRuntime and initialize with OpenAPI spec
+        let tool_runtime = tool_runtime::ToolRuntime::new(app_state.clone());
+        
+        // Load OpenAPI spec for validation
+        let openapi_spec = serde_json::to_value(openapi::PublicApiDoc::openapi())
+            .expect("Failed to serialize OpenAPI spec");
+        tool_runtime.set_openapi_spec(openapi_spec);
+        
+        // Store base URL in app state for ToolRuntime executor
+        *app_state.api_base_url.write() = Some(format!("http://{}", actual_addr));
+
+        let app = server::create_router(app_state, tool_runtime);
 
         let server = axum::serve(listener, app);
 

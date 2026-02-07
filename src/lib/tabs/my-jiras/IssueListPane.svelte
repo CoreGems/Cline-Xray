@@ -15,19 +15,61 @@
   // Search filter state
   let searchQuery = $state("");
   
-  // Filtered issues based on search query
-  let filteredIssues = $derived(() => {
-    if (!searchQuery.trim()) {
-      return jiraStore.issues;
+  // Type filter state - null means "All"
+  let selectedType = $state<string | null>(null);
+  
+  // Status filter state - null means "All"
+  let selectedStatus = $state<string | null>(null);
+  
+  // Get unique issue types from all issues
+  let uniqueTypes = $derived(() => {
+    const types = new Set<string>();
+    for (const issue of jiraStore.issues) {
+      if (issue.issueType) {
+        types.add(issue.issueType);
+      }
     }
-    const query = searchQuery.toLowerCase().trim();
-    return jiraStore.issues.filter((issue) => 
-      issue.key.toLowerCase().includes(query) ||
-      issue.summary.toLowerCase().includes(query) ||
-      issue.status.toLowerCase().includes(query) ||
-      (issue.assignee && issue.assignee.toLowerCase().includes(query)) ||
-      issue.priority.toLowerCase().includes(query)
-    );
+    return Array.from(types).sort();
+  });
+  
+  // Get unique statuses from all issues
+  let uniqueStatuses = $derived(() => {
+    const statuses = new Set<string>();
+    for (const issue of jiraStore.issues) {
+      if (issue.status) {
+        statuses.add(issue.status);
+      }
+    }
+    return Array.from(statuses).sort();
+  });
+  
+  // Filtered issues based on search query, type filter, and status filter
+  let filteredIssues = $derived(() => {
+    let issues = jiraStore.issues;
+    
+    // Filter by type first
+    if (selectedType) {
+      issues = issues.filter((issue) => issue.issueType === selectedType);
+    }
+    
+    // Filter by status
+    if (selectedStatus) {
+      issues = issues.filter((issue) => issue.status === selectedStatus);
+    }
+    
+    // Then filter by search query
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase().trim();
+      issues = issues.filter((issue) => 
+        issue.key.toLowerCase().includes(query) ||
+        issue.summary.toLowerCase().includes(query) ||
+        issue.status.toLowerCase().includes(query) ||
+        (issue.assignee && issue.assignee.toLowerCase().includes(query)) ||
+        issue.priority.toLowerCase().includes(query)
+      );
+    }
+    
+    return issues;
   });
 
   // Refresh handler
@@ -42,16 +84,42 @@
 
 <div class="w-80 flex-shrink-0 h-full flex flex-col bg-gray-50 border-r border-gray-200">
   <div class="p-3 border-b border-gray-200 bg-white">
-    <div class="flex items-center justify-between mb-2">
-      <h2 class="text-sm font-semibold text-gray-700">Issues ({filteredIssues().length}{searchQuery ? ` / ${jiraStore.issueCount}` : ''})</h2>
+    <!-- Header row with Issues count, Search bar, and Refresh button -->
+    <div class="flex items-center gap-2 mb-2">
+      <h2 class="text-sm font-semibold text-gray-700 whitespace-nowrap">Issues ({filteredIssues().length}{searchQuery || selectedType || selectedStatus ? `/${jiraStore.issueCount}` : ''})</h2>
+      
+      <!-- Inline Search Bar -->
+      <div class="relative flex-1">
+        <svg class="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+        </svg>
+        <input
+          type="text"
+          bind:value={searchQuery}
+          placeholder="Filter..."
+          class="w-full pl-7 pr-6 py-1 text-xs border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+        />
+        {#if searchQuery}
+          <button
+            onclick={() => searchQuery = ""}
+            class="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+            title="Clear search"
+          >
+            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+          </button>
+        {/if}
+      </div>
+      
       <button
         onclick={handleRefresh}
         disabled={jiraStore.listLoading}
-        class="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        class="p-1 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex-shrink-0"
         title="Refresh issues"
       >
         <svg 
-          class="w-5 h-5 {jiraStore.listLoading ? 'animate-spin' : ''}" 
+          class="w-4 h-4 {jiraStore.listLoading ? 'animate-spin' : ''}" 
           fill="none" 
           stroke="currentColor" 
           viewBox="0 0 24 24"
@@ -60,29 +128,62 @@
         </svg>
       </button>
     </div>
-    <!-- Search Bar -->
-    <div class="relative">
-      <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
-      </svg>
-      <input
-        type="text"
-        bind:value={searchQuery}
-        placeholder="Filter issues..."
-        class="w-full pl-8 pr-8 py-1.5 text-sm border border-gray-300 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-      />
-      {#if searchQuery}
+    
+    <!-- Type Filter Toggle -->
+    {#if uniqueTypes().length > 0}
+      <div class="flex flex-wrap gap-1 mb-2">
         <button
-          onclick={() => searchQuery = ""}
-          class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-          title="Clear search"
+          onclick={() => selectedType = null}
+          class="px-2 py-0.5 text-xs font-medium rounded-full transition-colors {
+            selectedType === null
+              ? 'bg-blue-100 text-blue-700 border border-blue-300'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+          }"
         >
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-          </svg>
+          All
         </button>
-      {/if}
-    </div>
+        {#each uniqueTypes() as type}
+          <button
+            onclick={() => selectedType = type}
+            class="px-2 py-0.5 text-xs font-medium rounded-full transition-colors {
+              selectedType === type
+                ? 'bg-blue-100 text-blue-700 border border-blue-300'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+            }"
+          >
+            {type}
+          </button>
+        {/each}
+      </div>
+    {/if}
+    
+    <!-- Status Filter Toggle -->
+    {#if uniqueStatuses().length > 0}
+      <div class="flex flex-wrap gap-1">
+        <button
+          onclick={() => selectedStatus = null}
+          class="px-2 py-0.5 text-xs font-medium rounded-full transition-colors {
+            selectedStatus === null
+              ? 'bg-green-100 text-green-700 border border-green-300'
+              : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+          }"
+        >
+          All
+        </button>
+        {#each uniqueStatuses() as status}
+          <button
+            onclick={() => selectedStatus = status}
+            class="px-2 py-0.5 text-xs font-medium rounded-full transition-colors {
+              selectedStatus === status
+                ? 'bg-green-100 text-green-700 border border-green-300'
+                : 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-transparent'
+            }"
+          >
+            {status}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
 
   <div class="flex-1 overflow-y-auto">

@@ -1,0 +1,535 @@
+<script lang="ts">
+  import { onMount } from "svelte";
+  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff } from "./api";
+  import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult } from "./types";
+
+  // ---- Workspace state ----
+  let wsLoading = $state(true);
+  let wsError: string | null = $state(null);
+  let workspaces: WorkspaceInfo[] = $state([]);
+  let checkpointsRoot: string = $state('');
+
+  // ---- Task state ----
+  let selectedWorkspace: WorkspaceInfo | null = $state(null);
+  let taskLoading = $state(false);
+  let taskError: string | null = $state(null);
+  let tasks: ClineTaskSummary[] = $state([]);
+
+  // ---- Steps state ----
+  let expandedTaskId: string | null = $state(null);
+  let stepsLoading = $state(false);
+  let stepsError: string | null = $state(null);
+  let steps: CheckpointStep[] = $state([]);
+
+  // ---- Step Diff state ----
+  let diffStepIndex: number | null = $state(null);
+  let diffLoading = $state(false);
+  let diffError: string | null = $state(null);
+  let diffResult: DiffResult | null = $state(null);
+
+  onMount(() => {
+    loadWorkspaces(false);
+  });
+
+  async function loadWorkspaces(refresh: boolean) {
+    wsLoading = true;
+    wsError = null;
+    try {
+      const resp: WorkspacesResponse = await fetchWorkspaces(refresh);
+      workspaces = resp.workspaces;
+      checkpointsRoot = resp.checkpointsRoot;
+    } catch (e: any) {
+      wsError = e.message || String(e);
+    } finally {
+      wsLoading = false;
+    }
+  }
+
+  async function selectWorkspace(ws: WorkspaceInfo) {
+    selectedWorkspace = ws;
+    taskLoading = true;
+    taskError = null;
+    tasks = [];
+    try {
+      const resp: TasksResponse = await fetchTasks(ws.id, false);
+      tasks = resp.tasks;
+    } catch (e: any) {
+      taskError = e.message || String(e);
+    } finally {
+      taskLoading = false;
+    }
+  }
+
+  async function refreshTasks() {
+    if (!selectedWorkspace) return;
+    taskLoading = true;
+    taskError = null;
+    try {
+      const resp: TasksResponse = await fetchTasks(selectedWorkspace.id, true);
+      tasks = resp.tasks;
+    } catch (e: any) {
+      taskError = e.message || String(e);
+    } finally {
+      taskLoading = false;
+    }
+  }
+
+  function backToWorkspaces() {
+    selectedWorkspace = null;
+    tasks = [];
+    taskError = null;
+    expandedTaskId = null;
+    steps = [];
+  }
+
+  async function toggleSteps(task: ClineTaskSummary) {
+    if (expandedTaskId === task.taskId) {
+      // Collapse
+      expandedTaskId = null;
+      steps = [];
+      stepsError = null;
+      return;
+    }
+    // Expand
+    expandedTaskId = task.taskId;
+    stepsLoading = true;
+    stepsError = null;
+    steps = [];
+    try {
+      const resp = await fetchSteps(task.taskId, task.workspaceId);
+      steps = resp.steps.slice().reverse(); // latest step on top
+    } catch (e: any) {
+      stepsError = e.message || String(e);
+    } finally {
+      stepsLoading = false;
+    }
+  }
+
+  async function loadStepDiff(step: CheckpointStep, e: MouseEvent) {
+    e.stopPropagation(); // Don't toggle task expansion
+    if (!expandedTaskId || !selectedWorkspace) return;
+
+    if (diffStepIndex === step.index) {
+      // Collapse diff
+      diffStepIndex = null;
+      diffResult = null;
+      diffError = null;
+      return;
+    }
+
+    diffStepIndex = step.index;
+    diffLoading = true;
+    diffError = null;
+    diffResult = null;
+    try {
+      diffResult = await fetchStepDiff(expandedTaskId, step.index, selectedWorkspace.id);
+    } catch (e: any) {
+      diffError = e.message || String(e);
+    } finally {
+      diffLoading = false;
+    }
+  }
+
+  function shortHash(hash: string): string {
+    return hash.substring(0, 8);
+  }
+
+  function statusColor(status: string): string {
+    switch (status) {
+      case 'added': return 'text-green-600';
+      case 'deleted': return 'text-red-600';
+      case 'renamed': return 'text-purple-600';
+      default: return 'text-yellow-600';
+    }
+  }
+
+  function statusIcon(status: string): string {
+    switch (status) {
+      case 'added': return '+';
+      case 'deleted': return '−';
+      case 'renamed': return '→';
+      default: return '~';
+    }
+  }
+
+  function formatDate(iso: string): string {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit'
+      });
+    } catch {
+      return iso;
+    }
+  }
+</script>
+
+<div class="flex-1 p-6 overflow-auto">
+
+  <!-- ============ TASK LIST VIEW (drilled into a workspace) ============ -->
+  {#if selectedWorkspace}
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <div class="flex items-center gap-3 mb-1">
+          <button
+            onclick={backToWorkspaces}
+            class="text-blue-600 hover:text-blue-800 text-sm font-medium flex items-center gap-1 transition-colors"
+          >
+            ◂ Workspaces
+          </button>
+          <span class="text-gray-300">|</span>
+          <h2 class="text-lg font-semibold text-gray-900">
+            Workspace: <span class="font-mono">{selectedWorkspace.id}</span>
+          </h2>
+          {#if selectedWorkspace.active}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+              Active
+            </span>
+          {:else}
+            <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+              Paused
+            </span>
+          {/if}
+        </div>
+        <p class="text-sm text-gray-500">
+          Git dir: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{selectedWorkspace.gitDir}</code>
+        </p>
+      </div>
+      <button
+        onclick={refreshTasks}
+        disabled={taskLoading}
+        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {taskLoading ? 'Loading...' : 'Refresh'}
+      </button>
+    </div>
+
+    <!-- Task Loading -->
+    {#if taskLoading}
+      <div class="flex items-center justify-center py-20">
+        <div class="text-center">
+          <svg class="animate-spin h-8 w-8 text-blue-500 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <p class="text-gray-500 text-sm">Enumerating tasks...</p>
+        </div>
+      </div>
+
+    <!-- Task Error -->
+    {:else if taskError}
+      <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+        <div class="flex items-start gap-3">
+          <svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <div>
+            <p class="text-sm font-medium text-red-800">Failed to list tasks</p>
+            <p class="text-sm text-red-600 mt-1">{taskError}</p>
+          </div>
+        </div>
+      </div>
+
+    <!-- No Tasks -->
+    {:else if tasks.length === 0}
+      <div class="flex items-center justify-center py-20">
+        <div class="text-center">
+          <div class="text-4xl mb-4">📋</div>
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">No Tasks Found</h3>
+          <p class="text-sm text-gray-500">
+            No checkpoint commits found in this workspace.
+          </p>
+        </div>
+      </div>
+
+    <!-- Task Table -->
+    {:else}
+      <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th class="w-8 px-4 py-3"></th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">#</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Task ID</th>
+              <th class="text-right px-4 py-3 font-medium text-gray-600">Steps</th>
+              <th class="text-right px-4 py-3 font-medium text-gray-600">Files</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Last Changed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each tasks as task, i}
+              <tr
+                class="border-b border-gray-100 hover:bg-blue-50 transition-colors cursor-pointer {i === 0 && expandedTaskId !== task.taskId ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' : ''} {expandedTaskId === task.taskId ? 'bg-indigo-50' : ''}"
+                onclick={() => toggleSteps(task)}
+              >
+                <td class="px-4 py-3 text-gray-400 text-xs text-center">
+                  <span class="inline-block transition-transform {expandedTaskId === task.taskId ? 'rotate-90' : ''}">▸</span>
+                </td>
+                <td class="px-4 py-3 text-gray-400 font-mono text-xs">{i + 1}</td>
+                <td class="px-4 py-3 font-mono font-medium text-gray-900">
+                  {task.taskId}
+                  {#if i === 0}
+                    <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                  {/if}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-gray-700">{task.steps}</td>
+                <td class="px-4 py-3 text-right font-mono text-gray-700">{task.filesChanged}</td>
+                <td class="px-4 py-3 text-gray-600 text-xs">{formatDate(task.lastModified)}</td>
+              </tr>
+              <!-- Expanded Steps Panel -->
+              {#if expandedTaskId === task.taskId}
+                <tr>
+                  <td colspan="6" class="p-0">
+                    <div class="bg-gray-50 border-t border-b border-gray-200 px-6 py-4">
+                      {#if stepsLoading}
+                        <div class="flex items-center gap-2 py-3">
+                          <svg class="animate-spin h-4 w-4 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span class="text-sm text-gray-500">Loading steps...</span>
+                        </div>
+                      {:else if stepsError}
+                        <div class="text-sm text-red-600 py-2">
+                          Error: {stepsError}
+                        </div>
+                      {:else if steps.length === 0}
+                        <div class="text-sm text-gray-500 py-2">No steps found for this task.</div>
+                      {:else}
+                        <div class="text-xs font-medium text-gray-500 uppercase tracking-wide mb-2">
+                          Checkpoint Steps ({steps.length})
+                        </div>
+                        <table class="w-full text-xs">
+                          <thead>
+                            <tr class="text-gray-500">
+                              <th class="text-left px-3 py-1.5 font-medium">Step</th>
+                              <th class="text-left px-3 py-1.5 font-medium">Commit</th>
+                              <th class="text-right px-3 py-1.5 font-medium">Files</th>
+                              <th class="text-left px-3 py-1.5 font-medium">Timestamp</th>
+                              <th class="text-left px-3 py-1.5 font-medium"></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each steps as step, si}
+                              <tr class="border-t border-gray-200 {si === 0 ? 'bg-indigo-50/50' : 'hover:bg-white'} {diffStepIndex === step.index ? 'bg-amber-50' : ''}">
+                                <td class="px-3 py-2 font-mono text-gray-600">
+                                  {step.index}
+                                  {#if si === 0}
+                                    <span class="ml-1 text-[9px] font-bold text-indigo-600 uppercase">latest</span>
+                                  {/if}
+                                </td>
+                                <td class="px-3 py-2 font-mono text-gray-800" title={step.hash}>
+                                  {shortHash(step.hash)}
+                                </td>
+                                <td class="px-3 py-2 text-right font-mono text-gray-600">{step.filesChanged}</td>
+                                <td class="px-3 py-2 text-gray-500">{formatDate(step.timestamp)}</td>
+                                <td class="px-3 py-2">
+                                  <button
+                                    onclick={(e) => loadStepDiff(step, e)}
+                                    class="text-xs font-medium px-2 py-0.5 rounded transition-colors {diffStepIndex === step.index ? 'bg-amber-200 text-amber-800' : 'text-blue-600 hover:bg-blue-100'}"
+                                  >
+                                    {diffStepIndex === step.index ? '▾ Hide Diff' : '▸ Diff'}
+                                  </button>
+                                </td>
+                              </tr>
+                              <!-- Inline step diff -->
+                              {#if diffStepIndex === step.index}
+                                <tr>
+                                  <td colspan="5" class="p-0">
+                                    <div class="bg-white border-t border-gray-200 px-4 py-3">
+                                      {#if diffLoading}
+                                        <div class="flex items-center gap-2 py-2">
+                                          <svg class="animate-spin h-4 w-4 text-amber-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                          </svg>
+                                          <span class="text-xs text-gray-500">Computing diff...</span>
+                                        </div>
+                                      {:else if diffError}
+                                        <div class="text-xs text-red-600 py-1">Error: {diffError}</div>
+                                      {:else if diffResult}
+                                        <div class="text-[10px] text-gray-400 mb-2 font-mono">
+                                          {shortHash(diffResult.fromRef)} → {shortHash(diffResult.toRef)}
+                                        </div>
+                                        <!-- File list -->
+                                        <div class="mb-3 bg-gray-50 rounded border border-gray-200 p-2">
+                                          <div class="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1">
+                                            Files changed ({diffResult.files.length})
+                                          </div>
+                                          {#each diffResult.files as f}
+                                            <div class="flex items-center gap-2 py-0.5 text-xs font-mono">
+                                              <span class="{statusColor(f.status)} font-bold w-3 text-center">{statusIcon(f.status)}</span>
+                                              <span class="text-gray-700 truncate">{f.path}</span>
+                                              <span class="ml-auto text-green-600">+{f.linesAdded}</span>
+                                              <span class="text-red-600">-{f.linesRemoved}</span>
+                                            </div>
+                                          {/each}
+                                        </div>
+                                        <!-- Patch text -->
+                                        {#if diffResult.patch}
+                                          <details class="group">
+                                            <summary class="text-[10px] font-medium text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700 select-none">
+                                              Unified Diff ({Math.round(diffResult.patch.length / 1024)}KB)
+                                            </summary>
+                                            <pre class="mt-2 bg-gray-900 text-gray-100 text-[10px] leading-4 p-3 rounded overflow-x-auto max-h-80 font-mono">{diffResult.patch}</pre>
+                                          </details>
+                                        {/if}
+                                      {/if}
+                                    </div>
+                                  </td>
+                                </tr>
+                              {/if}
+                            {/each}
+                          </tbody>
+                        </table>
+                      {/if}
+                    </div>
+                  </td>
+                </tr>
+              {/if}
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Summary -->
+      <div class="mt-4 text-sm text-gray-500">
+        Total: {tasks.length} task{tasks.length !== 1 ? 's' : ''},
+        {tasks.reduce((s, t) => s + t.steps, 0)} steps,
+        {tasks.reduce((s, t) => s + t.filesChanged, 0)} files touched
+      </div>
+    {/if}
+
+  <!-- ============ WORKSPACE LIST VIEW (default) ============ -->
+  {:else}
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-lg font-semibold text-gray-900">Checkpoint Workspaces</h2>
+        <p class="text-sm text-gray-500 mt-1">
+          Scanning: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{checkpointsRoot || '...'}</code>
+        </p>
+      </div>
+      <button
+        onclick={() => loadWorkspaces(true)}
+        disabled={wsLoading}
+        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+      >
+        {wsLoading ? 'Scanning...' : 'Refresh'}
+      </button>
+    </div>
+
+    <!-- Loading State -->
+    {#if wsLoading}
+      <div class="flex items-center justify-center py-20">
+        <div class="text-center">
+          <svg class="animate-spin h-8 w-8 text-blue-500 mx-auto mb-3" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <p class="text-gray-500 text-sm">Discovering checkpoint repositories...</p>
+        </div>
+      </div>
+
+    <!-- Error State -->
+    {:else if wsError}
+      <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+        <div class="flex items-start gap-3">
+          <svg class="w-5 h-5 text-red-500 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+          </svg>
+          <div>
+            <p class="text-sm font-medium text-red-800">Failed to discover workspaces</p>
+            <p class="text-sm text-red-600 mt-1">{wsError}</p>
+          </div>
+        </div>
+      </div>
+
+    <!-- Empty State -->
+    {:else if workspaces.length === 0}
+      <div class="flex items-center justify-center py-20">
+        <div class="text-center max-w-md">
+          <div class="text-4xl mb-4">📂</div>
+          <h3 class="text-lg font-semibold text-gray-900 mb-2">No Checkpoints Found</h3>
+          <p class="text-sm text-gray-500 mb-4">
+            No Cline checkpoint repositories were found.
+          </p>
+          <div class="bg-gray-50 border border-gray-200 rounded-lg p-3 text-left">
+            <p class="text-xs text-gray-600 mb-1 font-medium">Expected location:</p>
+            <code class="text-xs font-mono text-gray-700 break-all">
+              %APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\checkpoints\
+            </code>
+            <p class="text-xs text-gray-500 mt-2">
+              Make sure the Cline extension is installed and you have run at least one task.
+            </p>
+          </div>
+        </div>
+      </div>
+
+    <!-- Workspace Table -->
+    {:else}
+      <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 border-b border-gray-200">
+            <tr>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">#</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Workspace ID</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Status</th>
+              <th class="text-right px-4 py-3 font-medium text-gray-600">Tasks</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Last Changed</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600">Git Dir</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each workspaces as ws, i}
+              <tr
+                class="border-b border-gray-100 hover:bg-blue-50 transition-colors cursor-pointer {i === 0 ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' : ''}"
+                onclick={() => selectWorkspace(ws)}
+              >
+                <td class="px-4 py-3 text-gray-400 font-mono text-xs">{i + 1}</td>
+                <td class="px-4 py-3 font-mono font-medium text-gray-900">
+                  {ws.id}
+                  {#if i === 0}
+                    <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                  {/if}
+                </td>
+                <td class="px-4 py-3">
+                  {#if ws.active}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
+                      <span class="w-1.5 h-1.5 rounded-full bg-green-500"></span>
+                      Active
+                    </span>
+                  {:else}
+                    <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700">
+                      <span class="w-1.5 h-1.5 rounded-full bg-yellow-500"></span>
+                      Paused
+                    </span>
+                  {/if}
+                </td>
+                <td class="px-4 py-3 text-right font-mono text-gray-700">{ws.taskCount}</td>
+                <td class="px-4 py-3 text-gray-600 text-xs">
+                  {ws.lastModified ? formatDate(ws.lastModified) : '—'}
+                </td>
+                <td class="px-4 py-3 text-gray-500 font-mono text-xs truncate max-w-xs" title={ws.gitDir}>
+                  {ws.gitDir}
+                </td>
+                <td class="px-4 py-3">
+                  <span class="text-blue-600 text-xs font-medium">View Tasks ▸</span>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+
+      <!-- Summary -->
+      <div class="mt-4 text-sm text-gray-500">
+        Total: {workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''},
+        {workspaces.reduce((sum, ws) => sum + ws.taskCount, 0)} tasks
+      </div>
+    {/if}
+  {/if}
+</div>

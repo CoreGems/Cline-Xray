@@ -1,7 +1,7 @@
 // Agent Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, ChatMessage, ChatResponse } from "./types";
+import type { ApiInfo, ChatMessage, ChatResponse, AgentModelsResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -32,6 +32,29 @@ export async function sendChatMessage(
       message,
       history
     })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json();
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Get available agent models from the backend API
+ * @returns List of available models
+ */
+export async function getAgentModels(): Promise<AgentModelsResponse> {
+  const apiInfo = await getApiInfo();
+  
+  const response = await fetch(`${apiInfo.base_url}/agent/models`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
   });
 
   if (!response.ok) {

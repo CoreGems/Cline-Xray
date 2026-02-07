@@ -76,11 +76,11 @@ pub mod tools;
 pub mod types;
 
 // Re-exports for convenience
-pub use executor::ToolExecutor;
+pub use executor::{ToolExecutor, execute_openapi_tool};
 pub use handlers::{agent_ask_handler, agent_models_handler, agent_status_handler};
 pub use models::{get_available_models, ModelInfo, ModelsResponse};
 pub use provider::AgentProvider;
-pub use tools::{get_tool_definitions, ToolDefinition};
+pub use tools::{get_tool_definitions, tools_from_openapi, ToolDefinition};
 pub use types::{
     AgentConfig, AgentError, AgentRequest, AgentResponse, SourceCitation, TokenUsage,
     ToolCall, ToolError, ToolResult, TraceEntry,

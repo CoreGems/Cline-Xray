@@ -356,6 +356,135 @@ impl ToolExecutor {
     }
 }
 
+// ============================================================================
+// OpenAPI-Based Generic Tool Executor
+// ============================================================================
+
+/// Execute any auto-generated OpenAPI tool by calling its corresponding REST endpoint.
+///
+/// The tool name encodes the HTTP method and path:
+///   "get_jira_list" → GET /jira/list
+///   "get_health"    → GET /health
+///   "post_agent_chat" → POST /agent/chat
+///
+/// For GET requests, args are sent as query parameters.
+/// For POST requests, args are sent as JSON body.
+///
+/// # Arguments
+/// * `client` - HTTP client for making requests
+/// * `base_url` - Base URL of the REST API (e.g., "http://127.0.0.1:3030")
+/// * `auth_token` - Bearer token for authenticated endpoints
+/// * `tool_name` - Auto-generated tool name (e.g., "get_jira_list")
+/// * `args` - Tool arguments as JSON (from LLM function call)
+///
+/// # Returns
+/// The response body as a string (usually JSON)
+pub async fn execute_openapi_tool(
+    client: &reqwest::Client,
+    base_url: &str,
+    auth_token: &str,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Result<String, ToolError> {
+    // Parse tool name back to method + path
+    // "get_jira_list" → method="get", path_part="jira_list" → "/jira/list"
+    let parts: Vec<&str> = tool_name.splitn(2, '_').collect();
+    let method = parts.first().copied().unwrap_or("get");
+    let path = format!(
+        "/{}",
+        parts.get(1).unwrap_or(&"").replace('_', "/")
+    );
+    let url = format!("{}{}", base_url, path);
+
+    tracing::debug!(
+        "Executing OpenAPI tool: {} → {} {}",
+        tool_name,
+        method.to_uppercase(),
+        url
+    );
+
+    let response = match method {
+        "get" => {
+            // Build query params from args
+            let mut request = client.get(&url);
+            if let Some(obj) = args.as_object() {
+                for (key, value) in obj {
+                    // Strip quotes from string values for query params
+                    let val_str = match value {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    request = request.query(&[(key.as_str(), val_str.as_str())]);
+                }
+            }
+            request
+                .bearer_auth(auth_token)
+                .send()
+                .await
+                .map_err(|e| ToolError::DatabaseError(format!("HTTP request failed: {}", e)))?
+        }
+        "post" => {
+            client
+                .post(&url)
+                .bearer_auth(auth_token)
+                .json(args)
+                .send()
+                .await
+                .map_err(|e| ToolError::DatabaseError(format!("HTTP request failed: {}", e)))?
+        }
+        "put" => {
+            client
+                .put(&url)
+                .bearer_auth(auth_token)
+                .json(args)
+                .send()
+                .await
+                .map_err(|e| ToolError::DatabaseError(format!("HTTP request failed: {}", e)))?
+        }
+        "delete" => {
+            client
+                .delete(&url)
+                .bearer_auth(auth_token)
+                .send()
+                .await
+                .map_err(|e| ToolError::DatabaseError(format!("HTTP request failed: {}", e)))?
+        }
+        _ => {
+            return Err(ToolError::InvalidParameter(format!(
+                "Unsupported HTTP method: {}",
+                method
+            )));
+        }
+    };
+
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .map_err(|e| ToolError::DatabaseError(format!("Failed to read response: {}", e)))?;
+
+    if !status.is_success() {
+        tracing::warn!(
+            "OpenAPI tool {} returned HTTP {}: {}",
+            tool_name,
+            status,
+            &body[..body.len().min(200)]
+        );
+        return Err(ToolError::DatabaseError(format!(
+            "API returned HTTP {}: {}",
+            status,
+            &body[..body.len().min(500)]
+        )));
+    }
+
+    tracing::debug!(
+        "OpenAPI tool {} completed successfully ({} bytes)",
+        tool_name,
+        body.len()
+    );
+    Ok(body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

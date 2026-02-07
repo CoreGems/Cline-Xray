@@ -1,0 +1,526 @@
+use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
+use axum::Json;
+use parking_lot::RwLock;
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+use crate::state::AppState;
+use super::{cache, discovery};
+use super::types::{DiffResult, StepsResponse, TasksResponse, WorkspacesResponse};
+
+// ============ In-memory caches ============
+
+/// Cached workspaces result (populated from disk or after discovery)
+static WORKSPACES_CACHE: once_cell::sync::Lazy<RwLock<Option<WorkspacesResponse>>> =
+    once_cell::sync::Lazy::new(|| {
+        // On first access, try loading from disk cache
+        let disk = cache::load_workspaces();
+        RwLock::new(disk)
+    });
+
+/// Cached tasks per workspace: workspace_id → TasksResponse
+/// Pre-populated from disk cache on first access.
+static TASKS_CACHE: once_cell::sync::Lazy<RwLock<std::collections::HashMap<String, TasksResponse>>> =
+    once_cell::sync::Lazy::new(|| {
+        // Disk task caches are loaded lazily per-workspace (not here)
+        RwLock::new(std::collections::HashMap::new())
+    });
+
+// ============ Types ============
+
+/// Error response for changes endpoints
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ChangesErrorResponse {
+    pub error: String,
+    pub code: u16,
+}
+
+/// Query parameters for /changes/workspaces
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct WorkspacesQuery {
+    /// Set to true to force re-discovery (bypass cache)
+    #[serde(default)]
+    pub refresh: Option<bool>,
+}
+
+/// Query parameters for /changes/tasks
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct TasksQuery {
+    /// Workspace ID to list tasks for (required)
+    pub workspace: String,
+    /// Set to true to force re-enumeration (bypass cache)
+    #[serde(default)]
+    pub refresh: Option<bool>,
+}
+
+/// Query parameters for /changes/tasks/:taskId/steps
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct StepsQuery {
+    /// Workspace ID (required to locate the git repo)
+    pub workspace: String,
+}
+
+/// Query parameters for /changes/tasks/:taskId/steps/:index/diff
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct StepDiffQuery {
+    /// Workspace ID (required to locate the git repo)
+    pub workspace: String,
+}
+
+/// Path parameters for step diff endpoint
+#[derive(Debug, Deserialize)]
+pub struct StepDiffPath {
+    pub task_id: String,
+    pub index: usize,
+}
+
+// ============ Handlers ============
+
+/// List discovered checkpoint workspaces
+///
+/// Scans the Cline globalStorage checkpoints directory and returns all
+/// workspace directories that contain a shadow Git repo (.git or .git_disabled).
+/// For each workspace, a task count is computed by parsing commit subjects.
+///
+/// Results are cached in memory and persisted to disk (`%APPDATA%/jira-dashboard/shadow_git_cache/`).
+/// On cold start, the disk cache is loaded automatically.
+/// Pass `?refresh=true` to force re-discovery from disk.
+#[utoipa::path(
+    get,
+    path = "/changes/workspaces",
+    params(WorkspacesQuery),
+    responses(
+        (status = 200, description = "List of discovered checkpoint workspaces", body = WorkspacesResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn list_workspaces_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<WorkspacesQuery>,
+) -> Result<Json<WorkspacesResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let force_refresh = params.refresh.unwrap_or(false);
+
+    // Return cached data if available and not refreshing
+    if !force_refresh {
+        let cache = WORKSPACES_CACHE.read();
+        if let Some(ref cached) = *cache {
+            log::info!(
+                "REST API: GET /changes/workspaces — returning {} cached workspaces",
+                cached.workspaces.len()
+            );
+            return Ok(Json(cached.clone()));
+        }
+    }
+
+    log::info!(
+        "REST API: GET /changes/workspaces — discovering (refresh={})",
+        force_refresh
+    );
+
+    // Run discovery in blocking context (filesystem + git CLI calls)
+    let result = tokio::task::spawn_blocking(|| {
+        let workspaces = discovery::find_workspaces();
+        let root = discovery::checkpoints_root()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+        WorkspacesResponse {
+            workspaces,
+            checkpoints_root: root,
+        }
+    })
+    .await;
+
+    match result {
+        Ok(response) => {
+            log::info!(
+                "REST API: Discovered {} checkpoint workspaces — caching (memory + disk)",
+                response.workspaces.len()
+            );
+            // Update memory cache
+            *WORKSPACES_CACHE.write() = Some(response.clone());
+            // Persist to disk
+            cache::save_workspaces(&response);
+            Ok(Json(response))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to discover workspaces: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to discover workspaces: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// List all tasks for a workspace
+///
+/// Enumerates all Cline tasks (groups of checkpoint commits) for the specified
+/// workspace. Each task includes step count, files changed, and last modified
+/// timestamp.
+///
+/// Results are cached in memory and persisted to disk.
+/// On cold start, disk cache is loaded per-workspace on first request.
+/// Pass `?refresh=true` to re-scan from git.
+#[utoipa::path(
+    get,
+    path = "/changes/tasks",
+    params(TasksQuery),
+    responses(
+        (status = 200, description = "List of tasks for the workspace", body = TasksResponse),
+        (status = 400, description = "Missing or invalid workspace parameter", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn list_tasks_handler(
+    State(_state): State<Arc<AppState>>,
+    Query(params): Query<TasksQuery>,
+) -> Result<Json<TasksResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = params.workspace.clone();
+    let force_refresh = params.refresh.unwrap_or(false);
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' query parameter".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Return memory-cached data if available and not refreshing
+    if !force_refresh {
+        let mem_cache = TASKS_CACHE.read();
+        if let Some(cached) = mem_cache.get(&workspace_id) {
+            log::info!(
+                "REST API: GET /changes/tasks — returning {} memory-cached tasks for workspace {}",
+                cached.tasks.len(),
+                workspace_id
+            );
+            return Ok(Json(cached.clone()));
+        }
+        drop(mem_cache);
+
+        // Try disk cache (cold start scenario)
+        if let Some(disk_cached) = cache::load_tasks(&workspace_id) {
+            log::info!(
+                "REST API: GET /changes/tasks — loaded {} tasks from disk cache for workspace {}",
+                disk_cached.tasks.len(),
+                workspace_id
+            );
+            // Promote to memory cache
+            TASKS_CACHE.write().insert(workspace_id.clone(), disk_cached.clone());
+            return Ok(Json(disk_cached));
+        }
+    }
+
+    log::info!(
+        "REST API: GET /changes/tasks — enumerating tasks for workspace {} (refresh={})",
+        workspace_id,
+        force_refresh
+    );
+
+    // Look up the git_dir for this workspace from the workspaces cache or re-discover
+    let git_dir = {
+        let ws_cache = WORKSPACES_CACHE.read();
+        ws_cache
+            .as_ref()
+            .and_then(|r| {
+                r.workspaces
+                    .iter()
+                    .find(|w| w.id == workspace_id)
+                    .map(|w| w.git_dir.clone())
+            })
+    };
+
+    let git_dir = match git_dir {
+        Some(d) => d,
+        None => {
+            // Not in cache — try to discover it
+            let found = tokio::task::spawn_blocking({
+                let ws_id = workspace_id.clone();
+                move || {
+                    let workspaces = discovery::find_workspaces();
+                    workspaces
+                        .into_iter()
+                        .find(|w| w.id == ws_id)
+                        .map(|w| w.git_dir)
+                }
+            })
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ChangesErrorResponse {
+                        error: format!("Discovery failed: {}", e),
+                        code: 500,
+                    }),
+                )
+            })?;
+
+            match found {
+                Some(d) => d,
+                None => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ChangesErrorResponse {
+                            error: format!(
+                                "Workspace '{}' not found in checkpoint repositories",
+                                workspace_id
+                            ),
+                            code: 400,
+                        }),
+                    ));
+                }
+            }
+        }
+    };
+
+    // Run task enumeration in blocking context
+    let ws_id = workspace_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        let tasks = discovery::list_tasks_for_workspace(&ws_id, &git_path);
+        TasksResponse {
+            workspace_id: ws_id,
+            tasks,
+        }
+    })
+    .await;
+
+    match result {
+        Ok(response) => {
+            log::info!(
+                "REST API: Found {} tasks for workspace {} — caching (memory + disk)",
+                response.tasks.len(),
+                workspace_id
+            );
+            // Update memory cache
+            TASKS_CACHE.write().insert(workspace_id.clone(), response.clone());
+            // Persist to disk
+            cache::save_tasks(&workspace_id, &response);
+            Ok(Json(response))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to enumerate tasks: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to enumerate tasks: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Helper: resolve git_dir for a workspace from cache or discovery
+async fn resolve_git_dir(workspace_id: &str) -> Result<String, (StatusCode, Json<ChangesErrorResponse>)> {
+    // Try memory cache first
+    let cached = {
+        let ws_cache = WORKSPACES_CACHE.read();
+        ws_cache.as_ref().and_then(|r| {
+            r.workspaces.iter().find(|w| w.id == workspace_id).map(|w| w.git_dir.clone())
+        })
+    };
+    if let Some(d) = cached {
+        return Ok(d);
+    }
+
+    // Fall back to discovery
+    let ws_id = workspace_id.to_string();
+    let found = tokio::task::spawn_blocking(move || {
+        discovery::find_workspaces().into_iter().find(|w| w.id == ws_id).map(|w| w.git_dir)
+    })
+    .await
+    .map_err(|e| (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ChangesErrorResponse { error: format!("Discovery failed: {}", e), code: 500 }),
+    ))?;
+
+    found.ok_or_else(|| (
+        StatusCode::BAD_REQUEST,
+        Json(ChangesErrorResponse {
+            error: format!("Workspace '{}' not found in checkpoint repositories", workspace_id),
+            code: 400,
+        }),
+    ))
+}
+
+/// List checkpoint steps for a task
+///
+/// Returns the individual checkpoint commits (steps) for a given task,
+/// in chronological order (oldest first). Each step includes the commit hash,
+/// timestamp, and number of files changed vs its parent commit.
+///
+/// The `workspace` query parameter is required to locate the git repo.
+#[utoipa::path(
+    get,
+    path = "/changes/tasks/{task_id}/steps",
+    params(
+        ("task_id" = String, Path, description = "Task ID to list steps for"),
+        StepsQuery
+    ),
+    responses(
+        (status = 200, description = "List of checkpoint steps for the task", body = StepsResponse),
+        (status = 400, description = "Missing workspace parameter or task not found", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn list_steps_handler(
+    State(_state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Query(params): Query<StepsQuery>,
+) -> Result<Json<StepsResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = params.workspace.clone();
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' query parameter".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    log::info!(
+        "REST API: GET /changes/tasks/{}/steps — workspace={}",
+        task_id,
+        workspace_id
+    );
+
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    // Run step enumeration in blocking context
+    let tid = task_id.clone();
+    let ws_id = workspace_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        let steps = discovery::list_steps_for_task(&tid, &ws_id, &git_path);
+        StepsResponse {
+            task_id: tid,
+            workspace_id: ws_id,
+            steps,
+        }
+    })
+    .await;
+
+    match result {
+        Ok(response) => {
+            log::info!(
+                "REST API: Found {} steps for task {}",
+                response.steps.len(),
+                task_id
+            );
+            Ok(Json(response))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to enumerate steps: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to enumerate steps: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Get the diff for a single checkpoint step
+///
+/// Returns the unified diff (patch) and file-level statistics for the specified
+/// step (by 1-based index) within a task. The diff is computed between the
+/// step's parent commit and the step commit itself.
+///
+/// The `workspace` query parameter is required to locate the git repo.
+#[utoipa::path(
+    get,
+    path = "/changes/tasks/{task_id}/steps/{index}/diff",
+    params(
+        ("task_id" = String, Path, description = "Task ID"),
+        ("index" = usize, Path, description = "Step index (1-based, chronological)"),
+        StepDiffQuery
+    ),
+    responses(
+        (status = 200, description = "Diff result for the step", body = DiffResult),
+        (status = 400, description = "Invalid parameters", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn step_diff_handler(
+    State(_state): State<Arc<AppState>>,
+    Path(path): Path<StepDiffPath>,
+    Query(params): Query<StepDiffQuery>,
+) -> Result<Json<DiffResult>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = params.workspace.clone();
+    let task_id = path.task_id;
+    let step_index = path.index;
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' query parameter".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    log::info!(
+        "REST API: GET /changes/tasks/{}/steps/{}/diff — workspace={}",
+        task_id, step_index, workspace_id
+    );
+
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    let tid = task_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        discovery::get_step_diff(&tid, step_index, &git_path)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(diff)) => {
+            log::info!(
+                "REST API: Step diff for task {} step {}: {} files",
+                task_id, step_index, diff.files.len()
+            );
+            Ok(Json(diff))
+        }
+        Ok(Err(e)) => {
+            log::warn!("REST API: Step diff error: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ChangesErrorResponse {
+                    error: e,
+                    code: 400,
+                }),
+            ))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to compute step diff: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to compute step diff: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}

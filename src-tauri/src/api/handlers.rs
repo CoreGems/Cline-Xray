@@ -121,6 +121,64 @@ pub struct ErrorResponse {
     pub code: u16,
 }
 
+// ============ Gemini Models Types ============
+
+/// A single Gemini model
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiModel {
+    /// The resource name of the model (e.g., "models/gemini-2.0-flash")
+    pub name: String,
+    /// The base model ID (e.g., "models/gemini-2.0-flash")
+    #[serde(default)]
+    pub base_model_id: Option<String>,
+    /// Display name of the model
+    #[serde(default)]
+    pub display_name: Option<String>,
+    /// Description of what the model does
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Version of the model
+    #[serde(default)]
+    pub version: Option<String>,
+    /// Maximum input tokens the model supports
+    #[serde(default)]
+    pub input_token_limit: Option<u32>,
+    /// Maximum output tokens the model can generate
+    #[serde(default)]
+    pub output_token_limit: Option<u32>,
+    /// Supported generation methods (e.g., ["generateContent", "countTokens"])
+    #[serde(default)]
+    pub supported_generation_methods: Vec<String>,
+    /// Temperature range supported by the model
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    /// Top-P value for sampling
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    /// Top-K value for sampling
+    #[serde(default)]
+    pub top_k: Option<u32>,
+}
+
+/// Response from the list models endpoint
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GeminiModelsResponse {
+    /// List of available models
+    pub models: Vec<GeminiModel>,
+    /// Total count of models
+    pub total: usize,
+}
+
+/// Internal struct for parsing Gemini API models list response
+#[derive(Debug, Deserialize)]
+struct GeminiModelsApiResponse {
+    models: Option<Vec<GeminiModel>>,
+    #[serde(rename = "nextPageToken")]
+    next_page_token: Option<String>,
+}
+
 // ============ Request Types ============
 
 /// Query parameters for jira/list endpoint
@@ -154,6 +212,8 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
 /// 
 /// Returns a list of Jira issues based on the provided JQL query.
 /// If no JQL is provided, defaults to showing issues assigned to the current user.
+/// 
+/// This endpoint is suitable for AI agent tool use.
 #[utoipa::path(
     get,
     path = "/jira/list",
@@ -164,7 +224,7 @@ pub async fn health_handler(State(state): State<Arc<AppState>>) -> Json<HealthRe
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "jira"
+    tags = ["jira", "tool", "gpt"]
 )]
 pub async fn jira_list_handler(
     State(state): State<Arc<AppState>>,
@@ -569,4 +629,99 @@ pub async fn chat_handler(
         response: ai_response,
         history: updated_history,
     }))
+}
+
+/// List available Gemini models
+/// 
+/// Returns a list of all available Google Gemini models that can be used for inference.
+/// This endpoint queries the Gemini API to get the current list of models.
+#[utoipa::path(
+    get,
+    path = "/agent/models",
+    responses(
+        (status = 200, description = "List of available Gemini models", body = GeminiModelsResponse),
+        (status = 400, description = "Bad request - API key not configured", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "agent"
+)]
+pub async fn list_models_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<GeminiModelsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    log::info!("REST API: agent/models called");
+
+    // Check if Gemini API key is configured
+    if state.gemini_api_key.is_empty() || state.gemini_api_key == "YOUR_GEMINI_API_KEY_HERE" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "Gemini API key not configured. Please set GEMINI_API_KEY in .env file.".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Call Gemini API to list models
+    let client = reqwest::Client::new();
+    let url = format!(
+        "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+        state.gemini_api_key
+    );
+
+    let response = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("REST API: Failed to call Gemini models API: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to call Gemini API: {}", e),
+                    code: 500,
+                }),
+            )
+        })?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| {
+        log::error!("REST API: Failed to read Gemini models response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to read Gemini response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    if !status.is_success() {
+        log::error!("REST API: Gemini models API error ({}): {}", status, response_text);
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Gemini API error: {}", response_text),
+                code: status.as_u16(),
+            }),
+        ));
+    }
+
+    let api_response: GeminiModelsApiResponse = serde_json::from_str(&response_text).map_err(|e| {
+        log::error!("REST API: Failed to parse Gemini models response: {}", e);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to parse Gemini response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    let models = api_response.models.unwrap_or_default();
+    let total = models.len();
+
+    log::info!("REST API: Retrieved {} Gemini models", total);
+
+    Ok(Json(GeminiModelsResponse { models, total }))
 }

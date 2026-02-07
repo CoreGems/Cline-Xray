@@ -22,6 +22,7 @@ pub struct IssueSummary {
     pub status_category: String,
     pub assignee: Option<String>,
     pub priority: String,
+    pub issue_type: String,
     pub updated: String,
 }
 
@@ -299,6 +300,7 @@ impl JiraClient {
                     .priority
                     .map(|p| p.name)
                     .unwrap_or_else(|| "None".to_string()),
+                issue_type: issue.fields.issuetype.name,
                 updated: issue.fields.updated,
             })
             .collect();

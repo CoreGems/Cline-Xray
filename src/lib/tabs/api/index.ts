@@ -6,17 +6,26 @@ export { default as ApiTab } from './ApiTab.svelte';
 
 // Subtab components
 export { default as RESTSubtab } from './RESTSubtab.svelte';
+export { default as ToolsSubtab } from './ToolsSubtab.svelte';
+export { default as ToolsConsoleSubtab } from './ToolsConsoleSubtab.svelte';
 
 // Types
 export type {
   HttpMethod,
+  ApiType,
   ApiEndpoint,
   ApiSubTab,
   SubTabDefinition
 } from './types';
 
-// Endpoint data
-export { endpoints } from './endpoints';
+// Utility functions - Endpoint fetching (single source of truth from OpenAPI)
+export {
+  fetchEndpointsFromOpenApi,
+  clearEndpointCache,
+  getMethodColor,
+  getTagColor,
+  fetchToolsFromOpenApi
+} from './utils';
 
-// Utility functions
-export { getMethodColor, getTagColor } from './utils';
+// Agent tool types
+export type { AgentTool } from './utils';

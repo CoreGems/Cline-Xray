@@ -1,80 +1,35 @@
 <script lang="ts">
-  // My Jiras Tab - Main container with issue list and details panel
-  import IssueListPane from "./IssueListPane.svelte";
-  import { JiraDetailsPanel } from "../../../modules/jira-details";
-  import { fetchIssueDetails } from "./api";
-  import type { IssueDetails, IssueSummary } from "./types";
-
-  // Selected issue state
-  let selectedIssue: IssueDetails | null = $state(null);
-  let detailsLoading = $state(false);
-  let detailsError: string | null = $state(null);
-
-  // Select issue handler - fetches full details from Jira API
-  async function handleSelectIssue(issue: IssueSummary) {
-    // Skip if already selected
-    if (selectedIssue?.key === issue.key) return;
-    
-    await loadIssueDetails(issue.key, issue);
-  }
-
-  // Fetch issue details from API
-  async function loadIssueDetails(key: string, basicInfo?: IssueSummary) {
-    detailsLoading = true;
-    detailsError = null;
-    
-    // Show basic info immediately while loading full details (if available)
-    if (basicInfo) {
-      selectedIssue = {
-        key: basicInfo.key,
-        summary: basicInfo.summary,
-        status: basicInfo.status,
-        statusCategory: basicInfo.statusCategory,
-        priority: basicInfo.priority,
-        assignee: basicInfo.assignee,
-        reporter: null,
-        issueType: "Loading...",
-        created: basicInfo.updated,
-        updated: basicInfo.updated,
-        description: null,
-        labels: [],
-        components: [],
-        resolution: null,
-      };
-    }
-    
-    try {
-      // Fetch full issue details from Jira API
-      const details = await fetchIssueDetails(key);
-      selectedIssue = details;
-    } catch (e) {
-      console.error("Failed to fetch issue details:", e);
-      detailsError = e instanceof Error ? e.message : String(e);
-    } finally {
-      detailsLoading = false;
-    }
-  }
-
-  // Refresh current issue details
-  async function handleRefreshDetails() {
-    if (selectedIssue) {
-      await loadIssueDetails(selectedIssue.key);
-    }
-  }
+  // My Jiras Tab - Main container with subtab navigation
+  import ListSubtab from "./ListSubtab.svelte";
+  import type { MyJirasSubTab, SubTabDefinition } from "./types";
+  
+  // Subtab state
+  let activeSubTab: MyJirasSubTab = $state('List');
+  
+  const subTabs: SubTabDefinition[] = [
+    { id: 'List', label: 'List' }
+  ];
 </script>
 
-<div class="flex-1 flex overflow-hidden">
-  <!-- Left Pane - Issue List -->
-  <IssueListPane 
-    {selectedIssue} 
-    onSelectIssue={handleSelectIssue} 
-  />
+<div class="flex-1 flex flex-col h-full bg-gray-50">
+  <!-- Subtab Navigation -->
+  <div class="bg-white border-b border-gray-200 px-4">
+    <div class="flex gap-1">
+      {#each subTabs as tab}
+        <button
+          onclick={() => activeSubTab = tab.id}
+          class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {activeSubTab === tab.id
+            ? 'border-blue-500 text-blue-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}"
+        >
+          {tab.label}
+        </button>
+      {/each}
+    </div>
+  </div>
 
-  <!-- Right Pane - Issue Details (using extracted module) -->
-  <JiraDetailsPanel 
-    issue={selectedIssue} 
-    loading={detailsLoading} 
-    error={detailsError} 
-    onRefresh={handleRefreshDetails} 
-  />
+  <!-- Subtab Content -->
+  {#if activeSubTab === 'List'}
+    <ListSubtab />
+  {/if}
 </div>
