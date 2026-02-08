@@ -569,3 +569,46 @@ pub struct TaskThinkingQuery {
     #[serde(default)]
     pub min_length: Option<usize>,
 }
+
+// ============================================================================
+// Files in Context response (GET /history/tasks/:taskId/files)
+// ============================================================================
+
+/// Response for GET /history/tasks/:taskId/files — files-in-context audit trail
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskFilesResponse {
+    /// Task ID
+    pub task_id: String,
+    /// Total number of files in context
+    pub total_files: usize,
+    /// Number of files edited by Cline
+    pub edited_count: usize,
+    /// Number of files read by Cline
+    pub read_count: usize,
+    /// Number of files mentioned (other record sources)
+    pub mentioned_count: usize,
+    /// Number of active files
+    pub active_count: usize,
+    /// Number of stale files
+    pub stale_count: usize,
+    /// Files breakdown by record source
+    pub record_source_breakdown: std::collections::HashMap<String, usize>,
+    /// The files in context
+    pub files: Vec<FileInContextDetail>,
+}
+
+/// Query parameters for GET /history/tasks/:taskId/files
+#[derive(Debug, Deserialize, utoipa::IntoParams, utoipa::ToSchema)]
+pub struct TaskFilesQuery {
+    /// Filter by record state: "active" or "stale"
+    #[serde(default)]
+    pub state: Option<String>,
+    /// Filter by record source: "cline_edited", "read_tool", "file_mentioned", "user_edited"
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+// ============================================================================
+// Files in Context response (GET /history/tasks/:taskId/files)
+// =================================================================

@@ -1348,3 +1348,328 @@ pub fn parse_task_thinking(
         thinking_blocks,
     })
 }
+
+// ============================================================================
+// Files in Context parsing (GET /history/tasks/:taskId/files)
+// ============================================================================
+
+/// Parse a task's files-in-context audit trail from task_metadata.json.
+///
+/// This is a focused parser for the `/files` endpoint. It reads:
+/// - `task_metadata.json` — files_in_context array with read/edit timestamps
+///
+/// Supports filtering via:
+/// - `source` — filter by record_source (e.g. "cline_edited", "read_tool")
+/// - `state` — filter by record_state ("active" or "stale")
+///
+/// Returns None if the task directory doesn't exist or has no task_metadata.json.
+pub fn parse_task_files(
+    task_id: &str,
+    source_filter: Option<&str>,
+    state_filter: Option<&str>,
+) -> Option<TaskFilesResponse> {
+    let root = tasks_root()?;
+    let dir = root.join(task_id);
+
+    if !dir.is_dir() {
+        log::warn!("Task directory not found: {:?}", dir);
+        return None;
+    }
+
+    let metadata_path = dir.join("task_metadata.json");
+
+    if !metadata_path.exists() {
+        log::warn!("No task_metadata.json for task {}", task_id);
+        return None;
+    }
+
+    // Parse task_metadata.json
+    let content = match std::fs::read_to_string(&metadata_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to read {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    let metadata: RawTaskMetadata = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to parse {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    // Convert raw files to FileInContextDetail
+    let all_files: Vec<FileInContextDetail> = metadata
+        .files_in_context
+        .iter()
+        .map(|f| FileInContextDetail {
+            path: f.path.clone(),
+            record_state: f.record_state.clone(),
+            record_source: f.record_source.clone(),
+            cline_read_date: f.cline_read_date.map(epoch_ms_to_iso),
+            cline_edit_date: f.cline_edit_date.map(epoch_ms_to_iso),
+            user_edit_date: f.user_edit_date.map(epoch_ms_to_iso),
+        })
+        .collect();
+
+    // Compute stats before filtering
+    let total_files = all_files.len();
+    let files_edited_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("cline_edited"))
+        .count();
+    let files_read_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("read_tool"))
+        .count();
+    let files_mentioned_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("file_mentioned"))
+        .count();
+    let files_user_edited_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("user_edited"))
+        .count();
+
+    // Apply filters
+    let filtered: Vec<FileInContextDetail> = all_files
+        .into_iter()
+        .filter(|file| {
+            // Source filter
+            if let Some(source) = source_filter {
+                if file.record_source.as_deref() != Some(source) {
+                    return false;
+                }
+            }
+            // State filter
+            if let Some(state) = state_filter {
+                if file.record_state.as_deref() != Some(state) {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    Some(TaskFilesResponse {
+        task_id: task_id.to_string(),
+        total_files,
+        files_edited_count,
+        files_read_count,
+        files_mentioned_count,
+        files_user_edited_count,
+        files: filtered,
+    })
+}
+
+// ============================================================================
+// Files in Context parsing (GET /history/tasks/:taskId/files)
+// ============================================================================
+
+/// Parse a task's files-in-context audit trail from task_metadata.json.
+///
+/// This is a focused parser for the `/files` endpoint. It reads:
+/// - `task_metadata.json` — files_in_context array with read/edit timestamps
+///
+/// Supports filtering via:
+/// - `source` — filter by record_source (e.g. "cline_edited", "read_tool")
+/// - `state` — filter by record_state ("active" or "stale")
+///
+/// Files are sorted by most recent activity (latest of cline_read_date, cline_edit_date, user_edit_date).
+///
+/// Returns None if the task directory doesn't exist or has no task_metadata.json.
+pub fn parse_task_files(
+    task_id: &str,
+    source_filter: Option<&str>,
+    state_filter: Option<&str>,
+) -> Option<TaskFilesResponse> {
+    let root = tasks_root()?;
+    let dir = root.join(task_id);
+
+    if !dir.is_dir() {
+        log::warn!("Task directory not found: {:?}", dir);
+        return None;
+    }
+
+    let metadata_path = dir.join("task_metadata.json");
+
+    if !metadata_path.exists() {
+        log::warn!("No task_metadata.json for task {}", task_id);
+        return None;
+    }
+
+    // Parse task_metadata.json
+    let content = match std::fs::read_to_string(&metadata_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to read {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    let metadata: RawTaskMetadata = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to parse {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    // ---- Build FileInContextDetail entries with sorting key ----
+    let mut files_with_sort_key: Vec<(FileInContextDetail, u64)> = metadata
+        .files_in_context
+        .iter()
+        .map(|f| {
+            // Find the most recent activity timestamp for sorting
+            let most_recent = [
+                f.cline_read_date,
+                f.cline_edit_date,
+                f.user_edit_date,
+            ]
+            .iter()
+            .filter_map(|&ts| ts)
+            .max()
+            .unwrap_or(0);
+
+            let detail = FileInContextDetail {
+                path: f.path.clone(),
+                record_state: f.record_state.clone(),
+                record_source: f.record_source.clone(),
+                cline_read_date: f.cline_read_date.map(epoch_ms_to_iso),
+                cline_edit_date: f.cline_edit_date.map(epoch_ms_to_iso),
+                user_edit_date: f.user_edit_date.map(epoch_ms_to_iso),
+            };
+
+            (detail, most_recent)
+        })
+        .collect();
+
+    // Sort by most recent activity (descending)
+    files_with_sort_key.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Extract just the FileInContextDetail (drop sort keys)
+    let all_files: Vec<FileInContextDetail> = files_with_sort_key
+        .into_iter()
+        .map(|(detail, _)| detail)
+        .collect();
+
+    // ---- Compute stats BEFORE filtering ----
+    let total_files = all_files.len();
+    let files_edited_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("cline_edited"))
+        .count();
+    let files_read_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("read_tool"))
+        .count();
+    let files_mentioned_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("file_mentioned"))
+        .count();
+    let files_user_edited_count = all_files
+        .iter()
+        .filter(|f| f.record_source.as_deref() == Some("user_edited"))
+        .count();
+
+    // ---- Apply filters ----
+    let filtered: Vec<FileInContextDetail> = all_files
+        .into_iter()
+        .filter(|f| {
+            // Source filter (exact match, case-insensitive)
+            if let Some(source) = source_filter {
+                let source_lower = source.to_lowercase();
+                match &f.record_source {
+                    Some(rs) if rs.to_lowercase() == source_lower => {},
+                    _ => return false,
+                }
+            }
+
+            // State filter (exact match, case-insensitive)
+            if let Some(state) = state_filter {
+                let state_lower = state.to_lowercase();
+                match &f.record_state {
+                    Some(s) if s.to_lowercase() == state_lower => {},
+                    _ => return false,
+                }
+            }
+
+            true
+        })
+        .collect();
+
+    Some(TaskFilesResponse {
+        task_id: task_id.to_string(),
+        total_files,
+        files_edited_count,
+        files_read_count,
+        files_mentioned_count,
+        files_user_edited_count,
+        files: filtered,
+    })
+}
+
+// ============================================================================
+// Files in context parsing (GET /history/tasks/:taskId/files)
+// ============================================================================
+
+/// Parse a task's files-in-context audit trail from task_metadata.json.
+///
+/// This is a focused parser for the `/files` endpoint. It reads:
+/// - `task_metadata.json` — files_in_context array
+///
+/// Supports optional filtering via query parameters:
+/// - `?source=cline_edited` — filter by record_source
+/// - `?state=active` — filter by record_state
+///
+/// Returns None if the task directory doesn't exist or has no task_metadata.
+pub fn parse_task_files(
+    task_id: &str,
+    source_filter: Option<&str>,
+    state_filter: Option<&str>,
+) -> Option<TaskFilesResponse> {
+    let root = tasks_root()?;
+    let dir = root.join(task_id);
+
+    if !dir.is_dir() {
+        log::warn!("Task directory not found: {:?}", dir);
+        return None;
+    }
+
+    let metadata_path = dir.join("task_metadata.json");
+
+    if !metadata_path.exists() {
+        log::warn!("No task_metadata.json for task {}", task_id);
+        return None;
+    }
+
+    // Parse task_metadata.json
+    let content = match std::fs::read_to_string(&metadata_path) {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("Failed to read {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    let metadata: RawTaskMetadata = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(e) => {
+            log::warn!("Failed to parse {:?}: {}", metadata_path, e);
+            return None;
+        }
+    };
+
+    // Convert raw files to FileInContextDetail
+    let all_files: Vec<FileInContextDetail> = metadata
+        .files_in_context
+        .iter()
+        .map(|f| FileInContextDetail {
+            path: f.path.clone(),
+            record_state: f.record_state.clone(),
+            record_source: f.record_source.clone(),
+            cline_read_date: f.cline_read_date.map(epoch_ms_to_iso),
+            cline_edit_date: f.cline_edit_date.map(epoch_ms_to_iso),
+            user_edit_date: 

@@ -70,6 +70,7 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/history/tasks/:task_id/messages/:index", get(conversation_history::get_single_message_handler))
         .route("/history/tasks/:task_id/tools", get(conversation_history::get_task_tools_handler))
         .route("/history/tasks/:task_id/thinking", get(conversation_history::get_task_thinking_handler))
+        .route("/history/tasks/:task_id/files", get(conversation_history::get_task_files_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()

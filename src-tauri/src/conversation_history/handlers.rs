@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use crate::state::AppState;
 use super::{cache, parser};
-use super::types::{FullMessageResponse, HistoryErrorResponse, HistoryTasksQuery, PaginatedMessagesResponse, TaskDetailResponse, TaskHistoryListResponse, TaskMessagesQuery, TaskThinkingQuery, TaskToolsQuery, ThinkingBlocksResponse, ToolCallTimelineResponse};
+use super::types::{FullMessageResponse, HistoryErrorResponse, HistoryTasksQuery, PaginatedMessagesResponse, TaskDetailResponse, TaskFilesQuery, TaskFilesResponse, TaskHistoryListResponse, TaskMessagesQuery, TaskThinkingQuery, TaskToolsQuery, ThinkingBlocksResponse, ToolCallTimelineResponse};
 
 // ============ In-memory cache ============
 
@@ -620,7 +620,7 @@ pub async fn get_task_messages_handler(
 )]
 pub async fn get_single_message_handler(
     State(_state): State<Arc<AppState>>,
-    Path((task_id, index)): Path<(String, String)>,
+    Path((task_id, msg_index)): Path<(String, usize)>,
 ) -> Result<Json<FullMessageResponse>, (StatusCode, Json<HistoryErrorResponse>)> {
     // Validate task_id format
     if task_id.is_empty() || !task_id.chars().all(|c| c.is_ascii_digit()) {
@@ -632,20 +632,6 @@ pub async fn get_single_message_handler(
             }),
         ));
     }
-
-    // Validate and parse index
-    let msg_index: usize = match index.parse() {
-        Ok(i) => i,
-        Err(_) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(HistoryErrorResponse {
-                    error: format!("Invalid message index '{}': must be a non-negative integer", index),
-                    code: 400,
-                }),
-            ));
-        }
-    };
 
     log::info!(
         "REST API: GET /history/tasks/{}/messages/{} — fetching single message with full content",
@@ -671,6 +657,16 @@ pub async fn get_single_message_handler(
             let total_content_chars: usize = response.content.iter().map(|b| {
                 b.text_length.unwrap_or(0) + b.tool_input_length.unwrap_or(0) + b.tool_result_length.unwrap_or(0)
             }).sum();
+            
+            // Warn if payload is unusually large (soft guardrail for observability)
+            const LARGE_PAYLOAD_THRESHOLD: usize = 1_000_000; // 1 MB
+            if total_content_chars > LARGE_PAYLOAD_THRESHOLD {
+                log::warn!(
+                    "REST API: Large message payload for task {} message #{}: {} chars ({:.1} MB) - consider pagination or streaming for UI",
+                    task_id, msg_index, total_content_chars, total_content_chars as f64 / 1_000_000.0
+                );
+            }
+            
             log::info!(
                 "REST API: Task {} message #{}: role={}, {} blocks, ~{} chars total",
                 task_id, msg_index, response.role,
