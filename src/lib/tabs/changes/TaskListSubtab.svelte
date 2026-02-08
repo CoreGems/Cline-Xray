@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff } from "./api";
+  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff, fetchSubtaskDiff } from "./api";
+  import { fetchTaskSubtasks } from "../history/api";
+  import type { SubtasksResponse } from "../history/types";
   import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult } from "./types";
 
   // ---- Workspace state ----
@@ -34,6 +36,17 @@
   let taskDiffError: string | null = $state(null);
   let taskDiffResult: DiffResult | null = $state(null);
   let taskDiffCopyLabel = $state('📋 Copy');
+
+  // ---- Subtask Diff state ----
+  let subtaskTaskId: string | null = $state(null);
+  let subtasksData: SubtasksResponse | null = $state(null);
+  let subtasksLoading = $state(false);
+  let subtasksError: string | null = $state(null);
+  let subtaskDiffIndex: number | null = $state(null);
+  let subtaskDiffLoading = $state(false);
+  let subtaskDiffError: string | null = $state(null);
+  let subtaskDiffResult: DiffResult | null = $state(null);
+  let subtaskDiffCopyLabel = $state('📋 Copy');
 
   onMount(() => {
     loadWorkspaces(false);
@@ -161,6 +174,59 @@
       diffError = e.message || String(e);
     } finally {
       diffLoading = false;
+    }
+  }
+
+  async function loadSubtasks(task: ClineTaskSummary, e: MouseEvent) {
+    e.stopPropagation();
+    if (!selectedWorkspace) return;
+
+    if (subtaskTaskId === task.taskId) {
+      subtaskTaskId = null;
+      subtasksData = null;
+      subtasksError = null;
+      subtaskDiffIndex = null;
+      subtaskDiffResult = null;
+      return;
+    }
+
+    subtaskTaskId = task.taskId;
+    subtasksLoading = true;
+    subtasksError = null;
+    subtasksData = null;
+    subtaskDiffIndex = null;
+    subtaskDiffResult = null;
+    try {
+      subtasksData = await fetchTaskSubtasks(task.taskId);
+    } catch (e: any) {
+      subtasksError = e.message || String(e);
+    } finally {
+      subtasksLoading = false;
+    }
+  }
+
+  async function loadSubtaskDiff(index: number, e: MouseEvent) {
+    e.stopPropagation();
+    if (!subtaskTaskId || !selectedWorkspace) return;
+
+    if (subtaskDiffIndex === index) {
+      subtaskDiffIndex = null;
+      subtaskDiffResult = null;
+      subtaskDiffError = null;
+      return;
+    }
+
+    subtaskDiffIndex = index;
+    subtaskDiffLoading = true;
+    subtaskDiffError = null;
+    subtaskDiffResult = null;
+    subtaskDiffCopyLabel = '📋 Copy';
+    try {
+      subtaskDiffResult = await fetchSubtaskDiff(subtaskTaskId, index, selectedWorkspace.id);
+    } catch (e: any) {
+      subtaskDiffError = e.message || String(e);
+    } finally {
+      subtaskDiffLoading = false;
     }
   }
 
@@ -313,12 +379,20 @@
                 <td class="px-4 py-3 text-right font-mono text-gray-700">{task.filesChanged}</td>
                 <td class="px-4 py-3 text-gray-600 text-xs">{formatDate(task.lastModified)}</td>
                 <td class="px-4 py-3">
-                  <button
-                    onclick={(e) => loadTaskDiff(task, e)}
-                    class="text-xs font-medium px-2.5 py-1 rounded transition-colors {taskDiffId === task.taskId ? 'bg-purple-200 text-purple-800' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'}"
-                  >
-                    {taskDiffId === task.taskId ? '▾ Hide Full Diff' : '▸ Full Diff'}
-                  </button>
+                  <div class="flex items-center gap-1.5">
+                    <button
+                      onclick={(e) => loadTaskDiff(task, e)}
+                      class="text-xs font-medium px-2.5 py-1 rounded transition-colors {taskDiffId === task.taskId ? 'bg-purple-200 text-purple-800' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'}"
+                    >
+                      {taskDiffId === task.taskId ? '▾ Hide Full Diff' : '▸ Full Diff'}
+                    </button>
+                    <button
+                      onclick={(e) => loadSubtasks(task, e)}
+                      class="text-xs font-medium px-2.5 py-1 rounded transition-colors {subtaskTaskId === task.taskId ? 'bg-teal-200 text-teal-800' : 'bg-teal-50 text-teal-700 hover:bg-teal-100'}"
+                    >
+                      {subtaskTaskId === task.taskId ? '▾ Subtasks' : '▸ Subtasks'}
+                    </button>
+                  </div>
                 </td>
               </tr>
               <!-- Task-level Full Diff Panel -->
@@ -380,6 +454,120 @@
                             {/each}
                           </div>
                         </details>
+                      {/if}
+                    </div>
+                  </td>
+                </tr>
+              {/if}
+              <!-- Subtask Panel -->
+              {#if subtaskTaskId === task.taskId}
+                <tr>
+                  <td colspan="7" class="p-0">
+                    <div class="bg-teal-50/50 border-t border-b border-teal-200 px-6 py-4">
+                      {#if subtasksLoading}
+                        <div class="flex items-center gap-2 py-3">
+                          <svg class="animate-spin h-4 w-4 text-teal-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span class="text-sm text-gray-500">Loading subtasks...</span>
+                        </div>
+                      {:else if subtasksError}
+                        <div class="text-sm text-red-600 py-2">Error: {subtasksError}</div>
+                      {:else if subtasksData}
+                        <div class="flex items-center justify-between mb-3">
+                          <div class="text-xs font-medium text-teal-700 uppercase tracking-wide">
+                            Subtasks ({subtasksData.totalSubtasks}) · Task: {subtasksData.taskId}
+                          </div>
+                          <button
+                            onclick={(e) => { e.stopPropagation(); subtaskTaskId = null; subtasksData = null; subtasksError = null; subtaskDiffIndex = null; subtaskDiffResult = null; }}
+                            class="text-xs font-bold px-2 py-1 rounded bg-gray-200 hover:bg-red-100 text-gray-600 hover:text-red-700 transition-colors"
+                            title="Close subtasks"
+                          >✕</button>
+                        </div>
+                        {#if subtasksData.subtasks.length === 0}
+                          <div class="text-sm text-gray-500 py-2">No subtasks detected (single-prompt task).</div>
+                        {:else}
+                          <div class="space-y-2">
+                            {#each subtasksData.subtasks as subtask, si}
+                              <div class="bg-white rounded-lg border {subtaskDiffIndex === si ? 'border-teal-400 ring-1 ring-teal-200' : 'border-gray-200'} overflow-hidden">
+                                <!-- Subtask header -->
+                                <div class="flex items-start gap-3 px-4 py-3">
+                                  <div class="flex-shrink-0 mt-0.5">
+                                    <span class="inline-flex items-center justify-center w-6 h-6 rounded-full text-[10px] font-bold {si === 0 ? 'bg-teal-600 text-white' : 'bg-teal-100 text-teal-700'}">
+                                      {si}
+                                    </span>
+                                  </div>
+                                  <div class="flex-1 min-w-0">
+                                    <div class="flex items-center gap-2 mb-1">
+                                      <span class="text-xs font-semibold {si === 0 ? 'text-teal-700' : 'text-gray-700'}">
+                                        {si === 0 ? '🎯 Initial Task' : `💬 Feedback #${si}`}
+                                      </span>
+                                      <span class="text-[10px] text-gray-400 font-mono">{formatDate(subtask.timestamp)}</span>
+                                    </div>
+                                    <p class="text-xs text-gray-600 whitespace-pre-wrap break-words line-clamp-3">{subtask.prompt}</p>
+                                  </div>
+                                  <button
+                                    onclick={(e) => loadSubtaskDiff(si, e)}
+                                    class="flex-shrink-0 text-xs font-medium px-2.5 py-1 rounded transition-colors {subtaskDiffIndex === si ? 'bg-teal-600 text-white' : 'bg-teal-50 text-teal-700 hover:bg-teal-100'}"
+                                  >
+                                    {subtaskDiffIndex === si ? '▾ Hide Diff' : '▸ Diff'}
+                                  </button>
+                                </div>
+                                <!-- Subtask diff -->
+                                {#if subtaskDiffIndex === si}
+                                  <div class="border-t border-gray-200 px-4 py-3 bg-gray-50">
+                                    {#if subtaskDiffLoading}
+                                      <div class="flex items-center gap-2 py-2">
+                                        <svg class="animate-spin h-4 w-4 text-teal-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                        </svg>
+                                        <span class="text-xs text-gray-500">Computing subtask diff...</span>
+                                      </div>
+                                    {:else if subtaskDiffError}
+                                      <div class="text-xs text-red-600 py-1">Error: {subtaskDiffError}</div>
+                                    {:else if subtaskDiffResult}
+                                      <div class="flex items-center justify-between mb-2">
+                                        <div class="text-[10px] text-gray-400 font-mono">
+                                          <span class="font-semibold text-teal-700">Subtask #{subtaskDiffIndex} Diff</span> · {shortHash(subtaskDiffResult.fromRef)} → {shortHash(subtaskDiffResult.toRef)} · {subtaskDiffResult.files.length} file{subtaskDiffResult.files.length !== 1 ? 's' : ''} · {Math.round(subtaskDiffResult.patch.length / 1024)}KB
+                                        </div>
+                                        {#if subtaskDiffResult.patch}
+                                          <button
+                                            onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(subtaskDiffResult!.patch); subtaskDiffCopyLabel = '✓ Copied'; setTimeout(() => subtaskDiffCopyLabel = '📋 Copy', 1500); }}
+                                            class="text-[10px] font-medium px-2 py-0.5 rounded bg-teal-600 hover:bg-teal-700 text-white transition-colors"
+                                          >
+                                            {subtaskDiffCopyLabel}
+                                          </button>
+                                        {/if}
+                                      </div>
+                                      {#if subtaskDiffResult.patch}
+                                        <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; max-height: 384px !important; width: 100%; box-sizing: border-box;">{subtaskDiffResult.patch}</pre>
+                                      {:else}
+                                        <div class="text-xs text-gray-400 italic mb-3">No patch content (empty diff or no checkpoint steps in this subtask's time window)</div>
+                                      {/if}
+                                      <details class="group">
+                                        <summary class="text-[10px] font-medium text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700 select-none">
+                                          Files changed ({subtaskDiffResult.files.length})
+                                        </summary>
+                                        <div class="mt-2 bg-white rounded border border-gray-200 p-2">
+                                          {#each subtaskDiffResult.files as f}
+                                            <div class="flex items-center gap-2 py-0.5 text-xs font-mono">
+                                              <span class="{statusColor(f.status)} font-bold w-3 text-center">{statusIcon(f.status)}</span>
+                                              <span class="text-gray-700 truncate">{f.path}</span>
+                                              <span class="ml-auto text-green-600">+{f.linesAdded}</span>
+                                              <span class="text-red-600">-{f.linesRemoved}</span>
+                                            </div>
+                                          {/each}
+                                        </div>
+                                      </details>
+                                    {/if}
+                                  </div>
+                                {/if}
+                              </div>
+                            {/each}
+                          </div>
+                        {/if}
                       {/if}
                     </div>
                   </td>

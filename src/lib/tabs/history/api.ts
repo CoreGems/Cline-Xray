@@ -1,7 +1,7 @@
 // History Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, FullMessageResponse, TaskDetailResponse, TaskHistoryListResponse } from "./types";
+import type { ApiInfo, FullMessageResponse, HistoryStatsResponse, TaskDetailResponse, TaskHistoryListResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -155,6 +155,90 @@ export async function fetchTaskMessages(
   if (role) params.set('role', role);
   const qs = params.toString();
   const url = `${apiInfo.base_url}/history/tasks/${taskId}/messages${qs ? '?' + qs : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch files-in-context audit trail for a specific task
+ * GET /history/tasks/:taskId/files?source=&state=
+ */
+export async function fetchTaskFiles(
+  taskId: string,
+  source?: string,
+  state?: string
+): Promise<import('./types').TaskFilesResponse> {
+  const apiInfo = await getApiInfo();
+  const params = new URLSearchParams();
+  if (source) params.set('source', source);
+  if (state) params.set('state', state);
+  const qs = params.toString();
+  const url = `${apiInfo.base_url}/history/tasks/${taskId}/files${qs ? '?' + qs : ''}`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch aggregate stats across all task histories
+ * GET /history/stats
+ * @param refresh - if true, forces re-scan from disk (bypass cache)
+ */
+export async function fetchHistoryStats(refresh: boolean = false): Promise<HistoryStatsResponse> {
+  const apiInfo = await getApiInfo();
+  const params = new URLSearchParams();
+  if (refresh) params.set('refresh', 'true');
+  const qs = params.toString();
+  const url = qs ? `${apiInfo.base_url}/history/stats?${qs}` : `${apiInfo.base_url}/history/stats`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch subtask detection timeline for a specific task
+ * GET /history/tasks/:taskId/subtasks
+ */
+export async function fetchTaskSubtasks(taskId: string): Promise<import('./types').SubtasksResponse> {
+  const apiInfo = await getApiInfo();
+  const url = `${apiInfo.base_url}/history/tasks/${taskId}/subtasks`;
 
   const response = await fetch(url, {
     method: 'GET',

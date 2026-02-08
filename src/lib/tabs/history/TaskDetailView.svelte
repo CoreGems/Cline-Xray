@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { fetchTaskDetail, fetchTaskMessages, fetchSingleMessage, fetchTaskTools, fetchTaskThinking } from "./api";
-  import type { TaskDetailResponse, ConversationMessage, PaginatedMessagesResponse, FullMessageResponse, ToolCallTimelineResponse, ToolCallTimelineEntry, ThinkingBlocksResponse } from "./types";
+  import { fetchTaskDetail, fetchTaskMessages, fetchSingleMessage, fetchTaskTools, fetchTaskThinking, fetchTaskFiles, fetchTaskSubtasks } from "./api";
+  import type { TaskDetailResponse, ConversationMessage, PaginatedMessagesResponse, FullMessageResponse, ToolCallTimelineResponse, ToolCallTimelineEntry, ThinkingBlocksResponse, TaskFilesResponse, SubtasksResponse } from "./types";
 
   // ---- Props ----
   let { taskId, onBack }: { taskId: string; onBack: () => void } = $props();
@@ -10,7 +10,7 @@
   let error: string | null = $state(null);
   let detail: TaskDetailResponse | null = $state(null);
   let elapsed = $state(0);
-  let activeSection: 'messages' | 'tools' | 'thinking' | 'files' | 'env' | 'focus' = $state('messages');
+  let activeSection: 'messages' | 'subtasks' | 'tools' | 'thinking' | 'files' | 'env' | 'focus' = $state('messages');
 
   // ---- Full message expand state ----
   let expandedMsg: FullMessageResponse | null = $state(null);
@@ -67,6 +67,20 @@
   let thinkingMinLength: number = $state(0);
   let thinkingElapsed = $state(0);
 
+  // ---- Subtasks state ----
+  let subtasksData: SubtasksResponse | null = $state(null);
+  let subtasksLoading = $state(false);
+  let subtasksError: string | null = $state(null);
+  let subtasksElapsed = $state(0);
+
+  // ---- Files-in-context state (dedicated endpoint) ----
+  let filesData: TaskFilesResponse | null = $state(null);
+  let filesLoading = $state(false);
+  let filesError: string | null = $state(null);
+  let filesSourceFilter: string = $state('');
+  let filesStateFilter: string = $state('');
+  let filesElapsed = $state(0);
+
   // Load paginated messages when tab is active or params change
   $effect(() => {
     if (activeSection === 'messages' && detail) {
@@ -85,6 +99,13 @@
   $effect(() => {
     if (activeSection === 'thinking' && detail) {
       loadThinking(taskId, thinkingMaxLength, thinkingMinLength);
+    }
+  });
+
+  // Load files-in-context when files tab is active
+  $effect(() => {
+    if (activeSection === 'files' && detail && !filesData) {
+      loadFiles(taskId, filesSourceFilter || undefined, filesStateFilter || undefined);
     }
   });
 
@@ -141,6 +162,34 @@
     failedOnlyFilter = false;
     if (detail) {
       loadTools(taskId, undefined, false);
+    }
+  }
+
+  async function loadFiles(id: string, source?: string, state?: string) {
+    filesLoading = true;
+    filesError = null;
+    const start = performance.now();
+    try {
+      filesData = await fetchTaskFiles(id, source, state);
+      filesElapsed = Math.round(performance.now() - start);
+    } catch (e: any) {
+      filesError = e.message || String(e);
+    } finally {
+      filesLoading = false;
+    }
+  }
+
+  function applyFilesFilters() {
+    if (detail) {
+      loadFiles(taskId, filesSourceFilter || undefined, filesStateFilter || undefined);
+    }
+  }
+
+  function clearFilesFilters() {
+    filesSourceFilter = '';
+    filesStateFilter = '';
+    if (detail) {
+      loadFiles(taskId, undefined, undefined);
     }
   }
 
@@ -266,8 +315,30 @@
     }
   }
 
+  // Load subtasks when subtasks tab is active
+  $effect(() => {
+    if (activeSection === 'subtasks' && detail && !subtasksData) {
+      loadSubtasks(taskId);
+    }
+  });
+
+  async function loadSubtasks(id: string) {
+    subtasksLoading = true;
+    subtasksError = null;
+    const start = performance.now();
+    try {
+      subtasksData = await fetchTaskSubtasks(id);
+      subtasksElapsed = Math.round(performance.now() - start);
+    } catch (e: any) {
+      subtasksError = e.message || String(e);
+    } finally {
+      subtasksLoading = false;
+    }
+  }
+
   const sections = [
     { id: 'messages' as const, label: 'Messages', icon: '💬' },
+    { id: 'subtasks' as const, label: 'Subtasks', icon: '🔀' },
     { id: 'tools' as const, label: 'Tools', icon: '🔧' },
     { id: 'thinking' as const, label: 'Thinking', icon: '💭' },
     { id: 'files' as const, label: 'Files', icon: '📁' },
@@ -317,6 +388,11 @@
             <p class="text-xs text-gray-500 mt-0.5">
               {formatDate(detail.startedAt)} — {formatDate(detail.endedAt)} · {formatDuration(detail.startedAt, detail.endedAt)} · {formatBytes(detail.apiHistorySizeBytes)} · {elapsed}ms
             </p>
+            {#if detail.taskDirPath}
+              <p class="text-[10px] text-gray-400 mt-0.5 font-mono truncate" title={detail.taskDirPath}>
+                📂 {detail.taskDirPath}
+              </p>
+            {/if}
           </div>
         </div>
         <!-- Summary chips -->
@@ -519,6 +595,83 @@
                 Next →
               </button>
             </div>
+          {/if}
+        </div>
+
+      <!-- ============ SUBTASKS (Feedback-driven subtask detection) ============ -->
+      {:else if activeSection === 'subtasks'}
+        <div class="p-4 max-w-5xl mx-auto">
+          {#if subtasksLoading}
+            <div class="flex items-center justify-center py-16">
+              <svg class="animate-spin h-6 w-6 text-blue-500 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+              </svg>
+              <span class="text-sm text-gray-500">Detecting subtasks…</span>
+            </div>
+          {:else if subtasksError}
+            <div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+              <p class="text-xs text-red-700">{subtasksError}</p>
+            </div>
+          {:else if subtasksData}
+            <!-- Stats bar -->
+            <div class="flex gap-3 mb-4">
+              <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-gray-900">{subtasksData.totalSubtasks}</div>
+                <div class="text-[10px] text-gray-500">Total Phases</div>
+              </div>
+              <div class="bg-white border {subtasksData.hasSubtasks ? 'border-orange-200' : 'border-gray-200'} rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold {subtasksData.hasSubtasks ? 'text-orange-600' : 'text-gray-400'}">{subtasksData.hasSubtasks ? 'Yes' : 'No'}</div>
+                <div class="text-[10px] text-gray-500">Has Feedback</div>
+              </div>
+              <div class="flex-1"></div>
+              <div class="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1 text-right">
+                <div class="text-[10px] text-gray-400">{subtasksElapsed}ms</div>
+              </div>
+            </div>
+
+            <!-- Subtask timeline -->
+            <div class="space-y-3">
+              {#each subtasksData.subtasks as st}
+                <div class="bg-white border {st.isInitialTask ? 'border-blue-200' : 'border-orange-200'} rounded-lg p-4">
+                  <div class="flex items-center justify-between mb-2">
+                    <div class="flex items-center gap-2">
+                      <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold {st.isInitialTask ? 'bg-blue-100 text-blue-700' : 'bg-orange-100 text-orange-700'}">
+                        {st.isInitialTask ? '🎯 Initial Task' : `🔀 Subtask #${st.subtaskIndex}`}
+                      </span>
+                      <span class="text-[10px] text-gray-400 font-mono">{formatDate(st.timestamp)}</span>
+                    </div>
+                    <div class="flex items-center gap-2 text-[10px]">
+                      <span class="text-gray-500">msgs {st.messageRangeStart}–{st.messageRangeEnd ?? '∞'}</span>
+                      <span class="bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded font-medium">{st.messageCount} msgs</span>
+                      <span class="bg-green-50 text-green-600 px-1.5 py-0.5 rounded font-medium">{st.toolCallCount} tools</span>
+                    </div>
+                  </div>
+
+                  <!-- Prompt text -->
+                  <div class="text-xs text-gray-700 bg-gray-50 rounded p-2 font-mono whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                    {st.prompt}
+                  </div>
+
+                  <!-- Tools used -->
+                  {#if st.toolsUsed.length > 0}
+                    <div class="mt-2 flex flex-wrap gap-1">
+                      {#each st.toolsUsed as tool}
+                        <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium {toolColor(tool)}">
+                          {tool}
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+
+            {#if !subtasksData.hasSubtasks}
+              <div class="mt-4 bg-gray-50 border border-gray-200 rounded-lg p-4 text-center">
+                <p class="text-xs text-gray-500">This task has no feedback-driven subtasks — it was completed in a single pass.</p>
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -805,28 +958,108 @@
           {/if}
         </div>
 
-      <!-- ============ FILES ============ -->
+      <!-- ============ FILES (Enhanced — dedicated /files endpoint with filtering) ============ -->
       {:else if activeSection === 'files'}
         <div class="p-4 max-w-5xl mx-auto">
-          <!-- File stats -->
-          <div class="flex gap-3 mb-4">
-            <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-              <div class="text-lg font-bold text-gray-900">{detail.filesInContextCount}</div>
-              <div class="text-[10px] text-gray-500">In Context</div>
+          <!-- File stats from dedicated endpoint -->
+          {#if filesData}
+            <div class="flex gap-3 mb-4">
+              <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-gray-900">{filesData.totalFiles}</div>
+                <div class="text-[10px] text-gray-500">Total Files</div>
+              </div>
+              <div class="bg-white border border-green-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-green-600">{filesData.filesEditedCount}</div>
+                <div class="text-[10px] text-gray-500">✏️ Edited</div>
+              </div>
+              <div class="bg-white border border-purple-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-purple-600">{filesData.filesReadCount}</div>
+                <div class="text-[10px] text-gray-500">📖 Read</div>
+              </div>
+              <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-gray-500">{filesData.filesMentionedCount}</div>
+                <div class="text-[10px] text-gray-500">💬 Mentioned</div>
+              </div>
+              <div class="bg-white border border-blue-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-blue-600">{filesData.filesUserEditedCount}</div>
+                <div class="text-[10px] text-gray-500">👤 User Edited</div>
+              </div>
+              <div class="flex-1"></div>
+              <div class="bg-gray-50 border border-gray-200 rounded-lg px-3 py-1 text-right">
+                <div class="text-[10px] text-gray-500">Showing: {filesData.files.length} of {filesData.totalFiles}</div>
+                <div class="text-[10px] text-gray-400">{filesElapsed}ms</div>
+              </div>
             </div>
-            <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-              <div class="text-lg font-bold text-green-600">{detail.filesEditedCount}</div>
-              <div class="text-[10px] text-gray-500">Edited</div>
+          {:else}
+            <!-- Fallback stats from detail while loading -->
+            <div class="flex gap-3 mb-4">
+              <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-gray-900">{detail.filesInContextCount}</div>
+                <div class="text-[10px] text-gray-500">In Context</div>
+              </div>
+              <div class="bg-white border border-green-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-green-600">{detail.filesEditedCount}</div>
+                <div class="text-[10px] text-gray-500">Edited</div>
+              </div>
+              <div class="bg-white border border-purple-200 rounded-lg px-4 py-2 text-center">
+                <div class="text-lg font-bold text-purple-600">{detail.filesReadCount}</div>
+                <div class="text-[10px] text-gray-500">Read</div>
+              </div>
             </div>
-            <div class="bg-white border border-gray-200 rounded-lg px-4 py-2 text-center">
-              <div class="text-lg font-bold text-purple-600">{detail.filesReadCount}</div>
-              <div class="text-[10px] text-gray-500">Read</div>
+          {/if}
+
+          <!-- Filters -->
+          <div class="bg-white border border-gray-200 rounded-lg px-4 py-3 mb-4">
+            <div class="flex items-center gap-3 flex-wrap">
+              <span class="text-[10px] text-gray-500 uppercase font-medium tracking-wide">Source:</span>
+              {#each ['', 'cline_edited', 'read_tool', 'file_mentioned', 'user_edited'] as src}
+                <button
+                  onclick={() => { filesSourceFilter = src; applyFilesFilters(); }}
+                  class="px-2 py-0.5 rounded text-[10px] font-medium transition-colors {filesSourceFilter === src
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}"
+                >
+                  {src === '' ? 'All' : src}
+                </button>
+              {/each}
+
+              <span class="text-gray-300 mx-1">|</span>
+
+              <span class="text-[10px] text-gray-500 uppercase font-medium tracking-wide">State:</span>
+              {#each ['', 'active', 'stale'] as st}
+                <button
+                  onclick={() => { filesStateFilter = st; applyFilesFilters(); }}
+                  class="px-2 py-0.5 rounded text-[10px] font-medium transition-colors {filesStateFilter === st
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}"
+                >
+                  {st === '' ? 'All' : st}
+                </button>
+              {/each}
+
+              {#if filesSourceFilter || filesStateFilter}
+                <button
+                  onclick={clearFilesFilters}
+                  class="px-2.5 py-0.5 rounded text-[10px] font-medium bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors ml-1"
+                >
+                  Clear
+                </button>
+              {/if}
+              {#if filesLoading}
+                <span class="text-[10px] text-gray-400 animate-pulse ml-2">loading…</span>
+              {/if}
             </div>
           </div>
 
-          {#if detail.files.length === 0}
-            <div class="text-sm text-gray-400 italic text-center py-10">No files tracked in task_metadata.json</div>
-          {:else}
+          <!-- Error -->
+          {#if filesError}
+            <div class="bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
+              <p class="text-xs text-red-700">{filesError}</p>
+            </div>
+          {/if}
+
+          <!-- Files table -->
+          {#if filesData && filesData.files.length > 0}
             <div class="bg-white border border-gray-200 rounded-lg overflow-hidden">
               <table class="w-full text-xs">
                 <thead class="bg-gray-50 border-b border-gray-200">
@@ -834,12 +1067,13 @@
                     <th class="text-left px-3 py-2 font-medium text-gray-600">File Path</th>
                     <th class="text-left px-3 py-2 font-medium text-gray-600">Source</th>
                     <th class="text-left px-3 py-2 font-medium text-gray-600">State</th>
-                    <th class="text-left px-3 py-2 font-medium text-gray-600">Read</th>
-                    <th class="text-left px-3 py-2 font-medium text-gray-600">Edited</th>
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">Cline Read</th>
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">Cline Edit</th>
+                    <th class="text-left px-3 py-2 font-medium text-gray-600">User Edit</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {#each detail.files as f}
+                  {#each filesData.files as f}
                     <tr class="border-b border-gray-100 hover:bg-gray-50">
                       <td class="px-3 py-2 font-mono text-gray-700 max-w-xs truncate" title={f.path}>{f.path}</td>
                       <td class="px-3 py-2">
@@ -851,14 +1085,33 @@
                           <span class="text-gray-400">—</span>
                         {/if}
                       </td>
-                      <td class="px-3 py-2 text-gray-500">{f.recordState ?? '—'}</td>
+                      <td class="px-3 py-2">
+                        {#if f.recordState === 'active'}
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-50 text-green-700">active</span>
+                        {:else if f.recordState === 'stale'}
+                          <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500">stale</span>
+                        {:else}
+                          <span class="text-gray-400">—</span>
+                        {/if}
+                      </td>
                       <td class="px-3 py-2 text-gray-500 font-mono text-[10px]">{f.clineReadDate ? formatDate(f.clineReadDate) : '—'}</td>
                       <td class="px-3 py-2 text-gray-500 font-mono text-[10px]">{f.clineEditDate ? formatDate(f.clineEditDate) : '—'}</td>
+                      <td class="px-3 py-2 text-gray-500 font-mono text-[10px]">{f.userEditDate ? formatDate(f.userEditDate) : '—'}</td>
                     </tr>
                   {/each}
                 </tbody>
               </table>
             </div>
+          {:else if filesData && filesData.files.length === 0}
+            <div class="text-center py-10 text-gray-400 text-sm">
+              {#if filesSourceFilter || filesStateFilter}
+                No files match the current filters
+              {:else}
+                No files tracked in task_metadata.json
+              {/if}
+            </div>
+          {:else if !filesLoading && !filesError}
+            <div class="text-sm text-gray-400 italic text-center py-10">Loading files…</div>
           {/if}
         </div>
 

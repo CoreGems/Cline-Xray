@@ -30,6 +30,7 @@ use utoipa::{Modify, OpenApi};
         crate::shadow_git::handlers::task_diff_handler,         // GET /changes/tasks/:taskId/diff
         crate::shadow_git::handlers::list_steps_handler,        // GET /changes/tasks/:taskId/steps
         crate::shadow_git::handlers::step_diff_handler,         // GET /changes/tasks/:taskId/steps/:index/diff
+        crate::shadow_git::handlers::subtask_diff_handler,      // GET /changes/tasks/:taskId/subtasks/:subtaskIndex/diff
         // Conversation History
         crate::conversation_history::handlers::list_history_tasks_handler, // GET /history/tasks
         crate::conversation_history::handlers::get_task_detail_handler,    // GET /history/tasks/:taskId
@@ -37,6 +38,9 @@ use utoipa::{Modify, OpenApi};
         crate::conversation_history::handlers::get_single_message_handler, // GET /history/tasks/:taskId/messages/:index
         crate::conversation_history::handlers::get_task_tools_handler,     // GET /history/tasks/:taskId/tools
         crate::conversation_history::handlers::get_task_thinking_handler,  // GET /history/tasks/:taskId/thinking
+        crate::conversation_history::handlers::get_task_files_handler,     // GET /history/tasks/:taskId/files
+        crate::conversation_history::handlers::get_task_subtasks_handler,  // GET /history/tasks/:taskId/subtasks
+        crate::conversation_history::handlers::get_history_stats_handler,  // GET /history/stats
     ),
     components(
         schemas(
@@ -88,6 +92,11 @@ use utoipa::{Modify, OpenApi};
             crate::conversation_history::ThinkingBlockEntry,
             crate::conversation_history::ThinkingBlocksResponse,
             crate::conversation_history::TaskThinkingQuery,
+            crate::conversation_history::TaskFilesResponse,
+            crate::conversation_history::TaskFilesQuery,
+            crate::conversation_history::HistoryStatsResponse,
+            crate::conversation_history::SubtaskEntry,
+            crate::conversation_history::SubtasksResponse,
             crate::conversation_history::HistoryErrorResponse,
         )
     ),

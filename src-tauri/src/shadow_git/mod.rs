@@ -11,5 +11,5 @@ pub mod cache;
 pub mod handlers;
 
 pub use types::*;
-pub use discovery::{list_tasks_for_workspace, list_steps_for_task, get_task_diff};
+pub use discovery::{list_tasks_for_workspace, list_steps_for_task, get_task_diff, get_subtask_diff};
 pub use handlers::*;

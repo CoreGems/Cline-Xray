@@ -12,7 +12,7 @@
 | **P1: Task detail** | ✅ **DONE** | `GET /history/tasks/:taskId` — full task deep-dive: messages, tool calls, files, model info, env, focus chain |
 | **P2: UI — History tab** | ✅ **DONE** | Standalone "History" top-level tab with Tasks subtab (task list + expandable details) |
 | **P3: Cross-reference** | ⬜ TODO | Link conversation ↔ shadow git checkpoints |
-| **P4: Analytics** | ⬜ TODO | Aggregate stats dashboard |
+| **P4: Analytics** | ✅ **DONE** | `GET /history/stats` — aggregate stats: totals, averages, tool/model/version breakdowns, file stats, time range |
 | **P5: Search** | ⬜ TODO | Full-text search across histories |
 
 **Files created (P0):**

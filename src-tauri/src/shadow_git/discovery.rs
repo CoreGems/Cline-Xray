@@ -518,6 +518,211 @@ pub fn get_task_diff(
     })
 }
 
+/// Parse an ISO 8601 / RFC 3339 timestamp into epoch milliseconds for comparison.
+/// Handles both chrono rfc3339 (with fractional seconds) and git %aI (without).
+/// Falls back to string comparison if parsing fails.
+fn parse_timestamp_ms(ts: &str) -> i64 {
+    // Try chrono parsing (handles both formats)
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
+        return dt.timestamp_millis();
+    }
+    // Fallback: try without fractional seconds
+    if let Ok(dt) = chrono::DateTime::parse_from_str(ts, "%Y-%m-%dT%H:%M:%S%:z") {
+        return dt.timestamp_millis();
+    }
+    log::warn!("Failed to parse timestamp for comparison: {}", ts);
+    0
+}
+
+/// Map subtask time boundaries to checkpoint step ranges.
+///
+/// Given subtask timestamps (from conversation_history) and step timestamps (from git),
+/// returns Vec of (subtask_index, first_step_array_idx, last_step_array_idx).
+/// Steps array must be in chronological order (oldest first).
+///
+/// Uses proper datetime parsing instead of lexicographic string comparison
+/// to handle format differences (chrono rfc3339 with fractional seconds vs
+/// git %aI without fractional seconds).
+pub fn map_subtasks_to_steps(
+    subtasks: &crate::conversation_history::types::SubtasksResponse,
+    steps: &[super::types::CheckpointStep],
+) -> Vec<(usize, usize, usize)> {
+    let mut mappings = Vec::new();
+
+    // Pre-parse step timestamps to epoch_ms for efficient comparison
+    let step_times: Vec<i64> = steps.iter()
+        .map(|s| parse_timestamp_ms(&s.timestamp))
+        .collect();
+
+    for (si, subtask) in subtasks.subtasks.iter().enumerate() {
+        let subtask_start_ms = parse_timestamp_ms(&subtask.timestamp);
+        let subtask_end_ms = subtasks.subtasks
+            .get(si + 1)
+            .map(|next| parse_timestamp_ms(&next.timestamp));
+
+        let mut first_step: Option<usize> = None;
+        let mut last_step: Option<usize> = None;
+
+        for (i, step_ms) in step_times.iter().enumerate() {
+            let in_range = *step_ms >= subtask_start_ms
+                && subtask_end_ms.map_or(true, |end| *step_ms < end);
+            if in_range {
+                if first_step.is_none() {
+                    first_step = Some(i);
+                }
+                last_step = Some(i);
+            }
+        }
+
+        if let (Some(first), Some(last)) = (first_step, last_step) {
+            log::debug!(
+                "Subtask #{} mapped to steps {}..{} (step hashes: {}..{})",
+                si, first, last,
+                &steps[first].hash[..8], &steps[last].hash[..8]
+            );
+            mappings.push((si, first, last));
+        } else {
+            log::warn!(
+                "Subtask #{} (start={}, end={:?}) has no matching checkpoint steps",
+                si, subtask.timestamp,
+                subtasks.subtasks.get(si + 1).map(|n| &n.timestamp)
+            );
+        }
+    }
+
+    mappings
+}
+
+/// Compute the diff for a single subtask phase.
+///
+/// Maps conversation history subtask boundaries to checkpoint step ranges,
+/// then computes git diff between the boundary steps.
+/// `subtask_index` is 0-based (0 = initial task, 1+ = feedback subtasks).
+pub fn get_subtask_diff(
+    task_id: &str,
+    subtask_index: usize,
+    workspace_id: &str,
+    git_dir: &PathBuf,
+    excludes: &[String],
+) -> Result<super::types::DiffResult, String> {
+    // 1. Get subtask boundaries from conversation_history
+    let subtasks = crate::conversation_history::subtasks::parse_task_subtasks(task_id)
+        .ok_or_else(|| format!("No subtask data for task '{}' (ui_messages.json not found or no task entry)", task_id))?;
+
+    if subtask_index >= subtasks.total_subtasks {
+        return Err(format!(
+            "Subtask index {} out of range (task has {} subtasks)",
+            subtask_index, subtasks.total_subtasks
+        ));
+    }
+
+    // 2. Get checkpoint steps (chronological order)
+    let steps = list_steps_for_task(task_id, workspace_id, git_dir);
+    if steps.is_empty() {
+        return Err(format!("No checkpoint steps for task '{}'", task_id));
+    }
+
+    // 3. Map subtasks to step ranges
+    let mappings = map_subtasks_to_steps(&subtasks, &steps);
+    let mapping = mappings.iter()
+        .find(|(si, _, _)| *si == subtask_index)
+        .ok_or_else(|| format!(
+            "No checkpoint steps found within subtask #{}'s time window",
+            subtask_index
+        ))?;
+
+    let (_, first_step_idx, last_step_idx) = *mapping;
+
+    // 4. Compute diff boundaries
+    let to_ref = steps[last_step_idx].hash.clone();
+    let from_ref = if first_step_idx > 0 {
+        // Previous step's commit = baseline for this subtask
+        steps[first_step_idx - 1].hash.clone()
+    } else {
+        // First subtask — use parent of first commit
+        format!("{}^", steps[first_step_idx].hash)
+    };
+
+    let git_dir_str = git_dir.to_string_lossy().to_string();
+
+    // 5. Build numstat args with exclude patterns
+    let mut numstat_args = vec![
+        "--git-dir".to_string(), git_dir_str.clone(),
+        "diff".to_string(), "--numstat".to_string(),
+        from_ref.clone(), to_ref.clone(),
+        "--".to_string(), ".".to_string(),
+    ];
+    for ex in excludes {
+        numstat_args.push(format!(":(exclude){}", ex));
+    }
+
+    let numstat_output = Command::new("git")
+        .args(&numstat_args)
+        .output()
+        .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
+
+    let files = if numstat_output.status.success() {
+        parse_numstat(&String::from_utf8_lossy(&numstat_output.stdout))
+    } else {
+        // Fallback for root commit
+        let mut fallback_args = vec![
+            "--git-dir".to_string(), git_dir_str.clone(),
+            "diff-tree".to_string(), "--numstat".to_string(),
+            "--no-commit-id".to_string(), "-r".to_string(),
+            to_ref.clone(),
+        ];
+        for ex in excludes {
+            fallback_args.push(format!(":(exclude){}", ex));
+        }
+        let dt_out = Command::new("git")
+            .args(&fallback_args)
+            .output()
+            .map_err(|e| format!("Failed to run git diff-tree: {}", e))?;
+        parse_numstat(&String::from_utf8_lossy(&dt_out.stdout))
+    };
+
+    // 6. Build patch args with exclude patterns
+    let mut patch_args = vec![
+        "--git-dir".to_string(), git_dir_str.clone(),
+        "diff".to_string(),
+        from_ref.clone(), to_ref.clone(),
+        "--".to_string(), ".".to_string(),
+    ];
+    for ex in excludes {
+        patch_args.push(format!(":(exclude){}", ex));
+    }
+
+    let patch_output = Command::new("git")
+        .args(&patch_args)
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+
+    let patch = if patch_output.status.success() {
+        String::from_utf8_lossy(&patch_output.stdout).to_string()
+    } else {
+        let dt_out = Command::new("git")
+            .args([
+                "--git-dir", &git_dir_str,
+                "diff-tree", "-p", "--no-commit-id", "-r", &to_ref,
+            ])
+            .output()
+            .unwrap_or(patch_output);
+        String::from_utf8_lossy(&dt_out.stdout).to_string()
+    };
+
+    log::info!(
+        "Subtask diff for task {} subtask #{}: {} → {} ({} files, {} bytes patch)",
+        task_id, subtask_index, from_ref, to_ref, files.len(), patch.len()
+    );
+
+    Ok(super::types::DiffResult {
+        files,
+        patch,
+        from_ref,
+        to_ref,
+    })
+}
+
 /// Parse git --numstat output into DiffFile vec.
 /// Format: <added>\t<removed>\t<path>
 fn parse_numstat(output: &str) -> Vec<super::types::DiffFile> {

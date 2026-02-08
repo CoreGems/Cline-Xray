@@ -1,6 +1,7 @@
 <script lang="ts">
   // History Tab - Main container with subtab navigation + task detail view
   import HistoryTaskListSubtab from "./HistoryTaskListSubtab.svelte";
+  import HistoryStatsSubtab from "./HistoryStatsSubtab.svelte";
   import TaskDetailView from "./TaskDetailView.svelte";
   import type { HistorySubTab, SubTabDefinition } from "./types";
 
@@ -49,9 +50,7 @@
     {#if activeSubTab === 'Tasks'}
       <HistoryTaskListSubtab onViewDetail={openTaskDetail} />
     {:else if activeSubTab === 'Stats'}
-      <div class="flex-1 flex items-center justify-center text-gray-400 text-sm">
-        Stats dashboard — coming soon
-      </div>
+      <HistoryStatsSubtab />
     {/if}
   {/if}
 </div>

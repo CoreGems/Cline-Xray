@@ -83,6 +83,8 @@ export interface TaskDetailResponse {
   hasFocusChain: boolean;
   apiHistorySizeBytes: number;
   uiMessagesSizeBytes: number;
+  /** Full local filesystem path to the task directory */
+  taskDirPath: string;
 }
 
 /** A single conversation message */
@@ -230,6 +232,67 @@ export interface ThinkingBlocksResponse {
   totalCharacters: number;
   avgBlockLength: number;
   thinkingBlocks: ThinkingBlockEntry[];
+}
+
+/** Response for GET /history/tasks/:taskId/files — files-in-context audit trail */
+export interface TaskFilesResponse {
+  taskId: string;
+  totalFiles: number;
+  filesEditedCount: number;
+  filesReadCount: number;
+  filesMentionedCount: number;
+  filesUserEditedCount: number;
+  files: FileInContextDetail[];
+}
+
+/** Aggregate statistics across all task histories (GET /history/stats) */
+export interface HistoryStatsResponse {
+  totalTasks: number;
+  totalMessages: number;
+  totalToolCalls: number;
+  totalThinkingBlocks: number;
+  totalApiHistoryBytes: number;
+  totalUiMessagesBytes: number;
+  avgTaskSizeBytes: number;
+  minTaskSizeBytes: number;
+  maxTaskSizeBytes: number;
+  avgMessagesPerTask: number;
+  avgToolCallsPerTask: number;
+  avgThinkingBlocksPerTask: number;
+  avgFilesInContext: number;
+  toolBreakdown: Record<string, number>;
+  toolPercentages: Record<string, number>;
+  modelUsage: Record<string, number>;
+  modelProviderUsage: Record<string, number>;
+  clineVersionUsage: Record<string, number>;
+  totalFilesInContext: number;
+  totalFilesEdited: number;
+  totalFilesRead: number;
+  tasksWithFocusChain: number;
+  earliestTask: string | null;
+  latestTask: string | null;
+  tasksRoot: string;
+}
+
+/** A detected subtask within a task conversation */
+export interface SubtaskEntry {
+  subtaskIndex: number;
+  prompt: string;
+  timestamp: string;
+  isInitialTask: boolean;
+  messageRangeStart: number;
+  messageRangeEnd: number | null;
+  messageCount: number;
+  toolCallCount: number;
+  toolsUsed: string[];
+}
+
+/** Response for GET /history/tasks/:taskId/subtasks */
+export interface SubtasksResponse {
+  taskId: string;
+  totalSubtasks: number;
+  hasSubtasks: boolean;
+  subtasks: SubtaskEntry[];
 }
 
 export type HistorySubTab = 'Tasks' | 'Stats';

@@ -87,6 +87,23 @@ pub struct TaskDiffQuery {
     pub exclude: Vec<String>,
 }
 
+/// Query parameters for /changes/tasks/:taskId/subtasks/:subtaskIndex/diff
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct SubtaskDiffQuery {
+    /// Workspace ID (required to locate the git repo)
+    pub workspace: String,
+    /// Pathspec exclusion patterns (repeated)
+    #[serde(default)]
+    pub exclude: Vec<String>,
+}
+
+/// Path parameters for subtask diff endpoint
+#[derive(Debug, Deserialize)]
+pub struct SubtaskDiffPath {
+    pub task_id: String,
+    pub subtask_index: usize,
+}
+
 /// Path parameters for step diff endpoint
 #[derive(Debug, Deserialize)]
 pub struct StepDiffPath {
@@ -649,6 +666,95 @@ pub async fn step_diff_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ChangesErrorResponse {
                     error: format!("Failed to compute step diff: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Get the diff for a single subtask phase
+///
+/// Computes the diff for a specific subtask within a task by mapping
+/// conversation history feedback boundaries to checkpoint commit ranges.
+/// Subtask #0 is the initial task, #1+ are feedback-driven subtasks.
+///
+/// This bridges the conversation_history module (subtask detection from
+/// `ui_messages.json`) with the shadow_git module (checkpoint commits).
+/// Each subtask's time window is mapped to the checkpoint steps that
+/// fall within it, and the diff is computed across that step range.
+#[utoipa::path(
+    get,
+    path = "/changes/tasks/{task_id}/subtasks/{subtask_index}/diff",
+    params(
+        ("task_id" = String, Path, description = "Task ID"),
+        ("subtask_index" = usize, Path, description = "Subtask index (0-based: 0=initial task, 1+=feedback subtasks)"),
+        SubtaskDiffQuery
+    ),
+    responses(
+        (status = 200, description = "Diff result for the subtask phase", body = DiffResult),
+        (status = 400, description = "Invalid parameters or no steps in subtask window", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn subtask_diff_handler(
+    State(_state): State<Arc<AppState>>,
+    Path(path): Path<SubtaskDiffPath>,
+    Query(params): Query<SubtaskDiffQuery>,
+) -> Result<Json<DiffResult>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = params.workspace.clone();
+    let excludes = params.exclude.clone();
+    let task_id = path.task_id;
+    let subtask_index = path.subtask_index;
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' query parameter".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    log::info!(
+        "REST API: GET /changes/tasks/{}/subtasks/{}/diff — workspace={}, excludes={:?}",
+        task_id, subtask_index, workspace_id, excludes
+    );
+
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    let tid = task_id.clone();
+    let ws_id = workspace_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        discovery::get_subtask_diff(&tid, subtask_index, &ws_id, &git_path, &excludes)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(diff)) => {
+            log::info!(
+                "REST API: Subtask diff for task {} subtask #{}: {} files, {} bytes patch",
+                task_id, subtask_index, diff.files.len(), diff.patch.len()
+            );
+            Ok(Json(diff))
+        }
+        Ok(Err(e)) => {
+            log::warn!("REST API: Subtask diff error: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ChangesErrorResponse { error: e, code: 400 }),
+            ))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to compute subtask diff: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to compute subtask diff: {}", e),
                     code: 500,
                 }),
             ))

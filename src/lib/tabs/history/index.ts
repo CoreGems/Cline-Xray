@@ -6,6 +6,7 @@ export { default as HistoryTab } from './HistoryTab.svelte';
 
 // Subtab components
 export { default as HistoryTaskListSubtab } from './HistoryTaskListSubtab.svelte';
+export { default as HistoryStatsSubtab } from './HistoryStatsSubtab.svelte';
 export { default as TaskDetailView } from './TaskDetailView.svelte';
 
 // Types
@@ -19,9 +20,10 @@ export type {
   FileInContextDetail,
   ModelUsageDetail,
   EnvironmentDetail,
+  HistoryStatsResponse,
   HistorySubTab,
   SubTabDefinition
 } from './types';
 
 // API functions
-export { fetchHistoryTasks, fetchTaskDetail } from './api';
+export { fetchHistoryTasks, fetchTaskDetail, fetchHistoryStats } from './api';

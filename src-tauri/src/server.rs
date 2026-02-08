@@ -60,17 +60,20 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/changes/tasks/:task_id/diff", get(shadow_git::task_diff_handler))
         .route("/changes/tasks/:task_id/steps", get(shadow_git::list_steps_handler))
         .route("/changes/tasks/:task_id/steps/:index/diff", get(shadow_git::step_diff_handler))
+        .route("/changes/tasks/:task_id/subtasks/:subtask_index/diff", get(shadow_git::subtask_diff_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Conversation History routes (protected)
     let history_routes = Router::new()
         .route("/history/tasks", get(conversation_history::list_history_tasks_handler))
+        .route("/history/stats", get(conversation_history::get_history_stats_handler))
         .route("/history/tasks/:task_id", get(conversation_history::get_task_detail_handler))
         .route("/history/tasks/:task_id/messages", get(conversation_history::get_task_messages_handler))
         .route("/history/tasks/:task_id/messages/:index", get(conversation_history::get_single_message_handler))
         .route("/history/tasks/:task_id/tools", get(conversation_history::get_task_tools_handler))
         .route("/history/tasks/:task_id/thinking", get(conversation_history::get_task_thinking_handler))
         .route("/history/tasks/:task_id/files", get(conversation_history::get_task_files_handler))
+        .route("/history/tasks/:task_id/subtasks", get(conversation_history::get_task_subtasks_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()

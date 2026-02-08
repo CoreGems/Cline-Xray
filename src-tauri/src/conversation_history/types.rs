@@ -133,6 +133,10 @@ pub struct TaskDetailResponse {
     pub api_history_size_bytes: u64,
     /// Size of ui_messages.json in bytes
     pub ui_messages_size_bytes: u64,
+
+    // ---- Local path ----
+    /// Full local filesystem path to the task directory
+    pub task_dir_path: String,
 }
 
 /// A single conversation message with its content blocks
@@ -291,7 +295,7 @@ pub enum RawContentBlock {
     Unknown,
 }
 
-/// A UI message from ui_messages.json (we only need timestamps)
+/// A UI message from ui_messages.json (timestamps + subtask detection)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawUiMessage {
@@ -300,6 +304,12 @@ pub struct RawUiMessage {
     pub msg_type: Option<String>,
     #[serde(default)]
     pub conversation_history_index: Option<i64>,
+    /// The "say" sub-type: "task", "user_feedback", "api_req_started", etc.
+    #[serde(default)]
+    pub say: Option<String>,
+    /// Text content (task prompt for say="task", feedback text for say="user_feedback")
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// task_metadata.json structure
@@ -580,21 +590,17 @@ pub struct TaskThinkingQuery {
 pub struct TaskFilesResponse {
     /// Task ID
     pub task_id: String,
-    /// Total number of files in context
+    /// Total number of files in context (before filtering)
     pub total_files: usize,
-    /// Number of files edited by Cline
-    pub edited_count: usize,
-    /// Number of files read by Cline
-    pub read_count: usize,
-    /// Number of files mentioned (other record sources)
-    pub mentioned_count: usize,
-    /// Number of active files
-    pub active_count: usize,
-    /// Number of stale files
-    pub stale_count: usize,
-    /// Files breakdown by record source
-    pub record_source_breakdown: std::collections::HashMap<String, usize>,
-    /// The files in context
+    /// Number of files edited by Cline (record_source = "cline_edited")
+    pub files_edited_count: usize,
+    /// Number of files read by Cline (record_source = "read_tool")
+    pub files_read_count: usize,
+    /// Number of files mentioned (record_source = "file_mentioned")
+    pub files_mentioned_count: usize,
+    /// Number of files edited by user (record_source = "user_edited")
+    pub files_user_edited_count: usize,
+    /// The files in context (filtered if query params provided)
     pub files: Vec<FileInContextDetail>,
 }
 
@@ -610,5 +616,140 @@ pub struct TaskFilesQuery {
 }
 
 // ============================================================================
-// Files in Context response (GET /history/tasks/:taskId/files)
-// =================================================================
+// Aggregate Stats response (GET /history/stats)
+// ============================================================================
+
+/// Aggregate statistics across all Cline task conversation histories
+///
+/// Computed by scanning all task summaries and aggregating counts, breakdowns,
+/// and averages. Reuses the same cached task index as GET /history/tasks.
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatsResponse {
+    // ---- Top-level counts ----
+    /// Total number of task directories found
+    pub total_tasks: usize,
+    /// Total API messages across all tasks (user + assistant turns)
+    pub total_messages: usize,
+    /// Total tool calls across all tasks
+    pub total_tool_calls: usize,
+    /// Total thinking blocks across all tasks
+    pub total_thinking_blocks: usize,
+
+    // ---- Size stats ----
+    // NOTE: All "task size" fields below refer to api_conversation_history.json ONLY,
+    // not ui_messages.json. The two file types are tracked separately because they
+    // have different sizes and parsing costs.
+    /// Total size of all api_conversation_history.json files across all tasks (bytes)
+    pub total_api_history_bytes: u64,
+    /// Total size of all ui_messages.json files across all tasks (bytes, tracked separately)
+    pub total_ui_messages_bytes: u64,
+    /// Average api_conversation_history.json size per task (bytes). 0.0 if no tasks.
+    pub avg_task_size_bytes: f64,
+    /// Smallest api_conversation_history.json among all tasks (bytes). 0 if no tasks.
+    pub min_task_size_bytes: u64,
+    /// Largest api_conversation_history.json among all tasks (bytes). 0 if no tasks.
+    pub max_task_size_bytes: u64,
+
+    // ---- Averages ----
+    /// Average messages per task
+    pub avg_messages_per_task: f64,
+    /// Average tool calls per task
+    pub avg_tool_calls_per_task: f64,
+    /// Average thinking blocks per task
+    pub avg_thinking_blocks_per_task: f64,
+    /// Average files in context per task
+    pub avg_files_in_context: f64,
+
+    // ---- Tool breakdown ----
+    /// Aggregate tool usage breakdown: tool_name → total count across all tasks
+    pub tool_breakdown: std::collections::HashMap<String, usize>,
+    /// Tool usage as percentages: tool_name → percentage of all tool calls
+    pub tool_percentages: std::collections::HashMap<String, f64>,
+
+    // ---- Model usage ----
+    /// Model usage breakdown: model_id → number of tasks using that model
+    pub model_usage: std::collections::HashMap<String, usize>,
+    /// Model provider breakdown: provider_id → number of tasks using that provider
+    pub model_provider_usage: std::collections::HashMap<String, usize>,
+
+    // ---- Cline version distribution ----
+    /// Cline version breakdown: version → number of tasks
+    pub cline_version_usage: std::collections::HashMap<String, usize>,
+
+    // ---- File stats ----
+    /// Total files in context across all tasks
+    pub total_files_in_context: usize,
+    /// Total files edited by Cline across all tasks
+    pub total_files_edited: usize,
+    /// Total files read by Cline across all tasks
+    pub total_files_read: usize,
+    /// Number of tasks with a focus chain file
+    pub tasks_with_focus_chain: usize,
+
+    // ---- Time range ----
+    /// ISO 8601 timestamp of the earliest task
+    pub earliest_task: Option<String>,
+    /// ISO 8601 timestamp of the most recent task
+    pub latest_task: Option<String>,
+
+    /// Root path that was scanned
+    pub tasks_root: String,
+}
+
+/// Query parameters for GET /history/stats
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct HistoryStatsQuery {
+    /// Set to true to force re-scan from disk (bypass cache)
+    #[serde(default)]
+    pub refresh: Option<bool>,
+}
+
+// ============================================================================
+// Subtask Detection response (GET /history/tasks/:taskId/subtasks)
+// ============================================================================
+
+/// A detected subtask within a Cline task conversation.
+///
+/// Tasks are often multi-phase: the user provides additional instructions via
+/// `<feedback>` tags after seeing the initial result. Each feedback-driven prompt
+/// is a subtask that maps to a contiguous range of api_conversation_history messages.
+///
+/// Detection source: `ui_messages.json` entries where `say = "task"` (initial)
+/// or `say = "user_feedback"` (subsequent subtasks).
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtaskEntry {
+    /// Subtask index (0 = initial task, 1+ = feedback-driven subtasks)
+    pub subtask_index: usize,
+    /// The subtask prompt text
+    pub prompt: String,
+    /// ISO 8601 timestamp when this subtask was issued
+    pub timestamp: String,
+    /// Whether this is the initial task (true) or a feedback subtask (false)
+    pub is_initial_task: bool,
+    /// First message index in api_conversation_history for this subtask
+    pub message_range_start: usize,
+    /// Last message index (inclusive). None if extends to end of conversation.
+    pub message_range_end: Option<usize>,
+    /// Number of API messages in this subtask's range
+    pub message_count: usize,
+    /// Number of tool calls within this subtask's message range
+    pub tool_call_count: usize,
+    /// Tool names used in this subtask (deduplicated)
+    pub tools_used: Vec<String>,
+}
+
+/// Response for GET /history/tasks/:taskId/subtasks — subtask detection timeline
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubtasksResponse {
+    /// Task ID
+    pub task_id: String,
+    /// Total number of subtasks (including initial task)
+    pub total_subtasks: usize,
+    /// Whether this task has any feedback-driven subtasks (total > 1)
+    pub has_subtasks: bool,
+    /// The detected subtasks in chronological order
+    pub subtasks: Vec<SubtaskEntry>,
+}
