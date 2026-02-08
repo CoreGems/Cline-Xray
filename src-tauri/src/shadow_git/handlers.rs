@@ -23,7 +23,13 @@ static WORKSPACES_CACHE: once_cell::sync::Lazy<RwLock<Option<WorkspacesResponse>
 /// Pre-populated from disk cache on first access.
 static TASKS_CACHE: once_cell::sync::Lazy<RwLock<std::collections::HashMap<String, TasksResponse>>> =
     once_cell::sync::Lazy::new(|| {
-        // Disk task caches are loaded lazily per-workspace (not here)
+        RwLock::new(std::collections::HashMap::new())
+    });
+
+/// Cached steps per task: "workspace_id:task_id" → StepsResponse
+/// Loaded lazily from disk per-task.
+static STEPS_CACHE: once_cell::sync::Lazy<RwLock<std::collections::HashMap<String, StepsResponse>>> =
+    once_cell::sync::Lazy::new(|| {
         RwLock::new(std::collections::HashMap::new())
     });
 
@@ -59,6 +65,9 @@ pub struct TasksQuery {
 pub struct StepsQuery {
     /// Workspace ID (required to locate the git repo)
     pub workspace: String,
+    /// Set to true to force re-enumeration (bypass cache)
+    #[serde(default)]
+    pub refresh: Option<bool>,
 }
 
 /// Query parameters for /changes/tasks/:taskId/steps/:index/diff
@@ -66,6 +75,16 @@ pub struct StepsQuery {
 pub struct StepDiffQuery {
     /// Workspace ID (required to locate the git repo)
     pub workspace: String,
+}
+
+/// Query parameters for /changes/tasks/:taskId/diff
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct TaskDiffQuery {
+    /// Workspace ID (required to locate the git repo)
+    pub workspace: String,
+    /// Pathspec exclusion patterns (repeated), e.g. ?exclude=node_modules&exclude=target
+    #[serde(default)]
+    pub exclude: Vec<String>,
 }
 
 /// Path parameters for step diff endpoint
@@ -383,6 +402,7 @@ pub async fn list_steps_handler(
     Query(params): Query<StepsQuery>,
 ) -> Result<Json<StepsResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
     let workspace_id = params.workspace.clone();
+    let force_refresh = params.refresh.unwrap_or(false);
 
     if workspace_id.is_empty() {
         return Err((
@@ -394,15 +414,39 @@ pub async fn list_steps_handler(
         ));
     }
 
+    let cache_key = cache::steps_cache_key(&workspace_id, &task_id);
+
+    // 1. Return memory-cached data if available and not refreshing
+    if !force_refresh {
+        let mem = STEPS_CACHE.read();
+        if let Some(cached) = mem.get(&cache_key) {
+            log::info!(
+                "REST API: GET /changes/tasks/{}/steps — returning {} memory-cached steps",
+                task_id, cached.steps.len()
+            );
+            return Ok(Json(cached.clone()));
+        }
+        drop(mem);
+
+        // 2. Try disk cache (cold start / restart scenario)
+        if let Some(disk_cached) = cache::load_steps(&workspace_id, &task_id) {
+            log::info!(
+                "REST API: GET /changes/tasks/{}/steps — loaded {} steps from disk cache",
+                task_id, disk_cached.steps.len()
+            );
+            STEPS_CACHE.write().insert(cache_key.clone(), disk_cached.clone());
+            return Ok(Json(disk_cached));
+        }
+    }
+
+    // 3. Compute from git
     log::info!(
-        "REST API: GET /changes/tasks/{}/steps — workspace={}",
-        task_id,
-        workspace_id
+        "REST API: GET /changes/tasks/{}/steps — enumerating (workspace={}, refresh={})",
+        task_id, workspace_id, force_refresh
     );
 
     let git_dir = resolve_git_dir(&workspace_id).await?;
 
-    // Run step enumeration in blocking context
     let tid = task_id.clone();
     let ws_id = workspace_id.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -419,10 +463,14 @@ pub async fn list_steps_handler(
     match result {
         Ok(response) => {
             log::info!(
-                "REST API: Found {} steps for task {}",
+                "REST API: Found {} steps for task {} — caching (memory + disk)",
                 response.steps.len(),
                 task_id
             );
+            // Update memory cache
+            STEPS_CACHE.write().insert(cache_key, response.clone());
+            // Persist to disk
+            cache::save_steps(&workspace_id, &task_id, &response);
             Ok(Json(response))
         }
         Err(e) => {
@@ -431,6 +479,89 @@ pub async fn list_steps_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ChangesErrorResponse {
                     error: format!("Failed to enumerate steps: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Get the full task diff (base→HEAD)
+///
+/// Returns the unified diff and file-level stats for the entire task,
+/// computed from the first checkpoint's parent to the last checkpoint.
+/// This shows the cumulative changes across all steps.
+///
+/// Supports `exclude` query params for pathspec exclusion patterns
+/// (e.g. `?exclude=src-tauri/target&exclude=node_modules`).
+#[utoipa::path(
+    get,
+    path = "/changes/tasks/{task_id}/diff",
+    params(
+        ("task_id" = String, Path, description = "Task ID"),
+        TaskDiffQuery
+    ),
+    responses(
+        (status = 200, description = "Full task diff result", body = DiffResult),
+        (status = 400, description = "Invalid parameters", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes", "tool"]
+)]
+pub async fn task_diff_handler(
+    State(_state): State<Arc<AppState>>,
+    Path(task_id): Path<String>,
+    Query(params): Query<TaskDiffQuery>,
+) -> Result<Json<DiffResult>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = params.workspace.clone();
+    let excludes = params.exclude.clone();
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' query parameter".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    log::info!(
+        "REST API: GET /changes/tasks/{}/diff — workspace={}, excludes={:?}",
+        task_id, workspace_id, excludes
+    );
+
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    let tid = task_id.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        discovery::get_task_diff(&tid, &git_path, &excludes)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(diff)) => {
+            log::info!(
+                "REST API: Task diff for {}: {} files, {} bytes patch",
+                task_id, diff.files.len(), diff.patch.len()
+            );
+            Ok(Json(diff))
+        }
+        Ok(Err(e)) => {
+            log::warn!("REST API: Task diff error: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ChangesErrorResponse { error: e, code: 400 }),
+            ))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to compute task diff: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to compute task diff: {}", e),
                     code: 500,
                 }),
             ))

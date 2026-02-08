@@ -409,6 +409,115 @@ pub fn get_step_diff(
     })
 }
 
+/// Compute the full task diff (first checkpoint's parent → last checkpoint).
+/// This gives the complete set of changes for the entire task.
+/// Supports `exclude` patterns for pathspec exclusions.
+pub fn get_task_diff(
+    task_id: &str,
+    git_dir: &PathBuf,
+    excludes: &[String],
+) -> Result<super::types::DiffResult, String> {
+    let commits = parse_checkpoint_commits(git_dir);
+
+    // Filter to this task, reverse to chronological order (oldest first)
+    let mut task_commits: Vec<CheckpointCommit> = commits
+        .into_iter()
+        .filter(|(_, tid, _)| tid == task_id)
+        .collect();
+    task_commits.reverse();
+
+    if task_commits.is_empty() {
+        return Err(format!("No checkpoint commits found for task '{}'", task_id));
+    }
+
+    let first_hash = &task_commits[0].0;
+    let last_hash = &task_commits[task_commits.len() - 1].0;
+
+    // from_ref = parent of first checkpoint (first_hash^)
+    let from_ref = format!("{}^", first_hash);
+    let to_ref = last_hash.clone();
+
+    let git_dir_str = git_dir.to_string_lossy().to_string();
+
+    // Build numstat args with exclude patterns
+    let mut numstat_args = vec![
+        "--git-dir".to_string(), git_dir_str.clone(),
+        "diff".to_string(), "--numstat".to_string(),
+        from_ref.clone(), to_ref.clone(),
+        "--".to_string(), ".".to_string(),
+    ];
+    for ex in excludes {
+        numstat_args.push(format!(":(exclude){}", ex));
+    }
+
+    let numstat_output = Command::new("git")
+        .args(&numstat_args)
+        .output()
+        .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
+
+    let files = if numstat_output.status.success() {
+        parse_numstat(&String::from_utf8_lossy(&numstat_output.stdout))
+    } else {
+        // Fallback: try without parent (root commit scenario)
+        let mut fallback_args = vec![
+            "--git-dir".to_string(), git_dir_str.clone(),
+            "diff-tree".to_string(), "--numstat".to_string(),
+            "--no-commit-id".to_string(), "-r".to_string(),
+            to_ref.clone(),
+        ];
+        for ex in excludes {
+            fallback_args.push(format!(":(exclude){}", ex));
+        }
+        let dt_out = Command::new("git")
+            .args(&fallback_args)
+            .output()
+            .map_err(|e| format!("Failed to run git diff-tree: {}", e))?;
+        parse_numstat(&String::from_utf8_lossy(&dt_out.stdout))
+    };
+
+    // Build patch args with exclude patterns
+    let mut patch_args = vec![
+        "--git-dir".to_string(), git_dir_str.clone(),
+        "diff".to_string(),
+        from_ref.clone(), to_ref.clone(),
+        "--".to_string(), ".".to_string(),
+    ];
+    for ex in excludes {
+        patch_args.push(format!(":(exclude){}", ex));
+    }
+
+    let patch_output = Command::new("git")
+        .args(&patch_args)
+        .output()
+        .map_err(|e| format!("Failed to run git diff: {}", e))?;
+
+    let patch = if patch_output.status.success() {
+        String::from_utf8_lossy(&patch_output.stdout).to_string()
+    } else {
+        // Fallback for root commit
+        let dt_out = Command::new("git")
+            .args([
+                "--git-dir", &git_dir_str,
+                "diff-tree", "-p", "--no-commit-id", "-r", &to_ref,
+            ])
+            .output()
+            .unwrap_or(patch_output);
+        String::from_utf8_lossy(&dt_out.stdout).to_string()
+    };
+
+    log::info!(
+        "Task diff for task {}: {} → {} ({} files, {} bytes patch)",
+        task_id, from_ref, to_ref, files.len(), patch.len()
+    );
+
+    Ok(super::types::DiffResult {
+        files,
+        patch,
+        from_ref,
+        to_ref,
+    })
+}
+
 /// Parse git --numstat output into DiffFile vec.
 /// Format: <added>\t<removed>\t<path>
 fn parse_numstat(output: &str) -> Vec<super::types::DiffFile> {

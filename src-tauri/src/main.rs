@@ -3,6 +3,7 @@
 
 mod api;
 mod config;
+mod conversation_history;
 mod jira;
 mod logging;
 mod openapi;

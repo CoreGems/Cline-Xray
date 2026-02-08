@@ -27,8 +27,16 @@ use utoipa::{Modify, OpenApi};
         // Shadow Git / Changes
         crate::shadow_git::handlers::list_workspaces_handler,   // GET /changes/workspaces
         crate::shadow_git::handlers::list_tasks_handler,        // GET /changes/tasks
+        crate::shadow_git::handlers::task_diff_handler,         // GET /changes/tasks/:taskId/diff
         crate::shadow_git::handlers::list_steps_handler,        // GET /changes/tasks/:taskId/steps
         crate::shadow_git::handlers::step_diff_handler,         // GET /changes/tasks/:taskId/steps/:index/diff
+        // Conversation History
+        crate::conversation_history::handlers::list_history_tasks_handler, // GET /history/tasks
+        crate::conversation_history::handlers::get_task_detail_handler,    // GET /history/tasks/:taskId
+        crate::conversation_history::handlers::get_task_messages_handler,  // GET /history/tasks/:taskId/messages
+        crate::conversation_history::handlers::get_single_message_handler, // GET /history/tasks/:taskId/messages/:index
+        crate::conversation_history::handlers::get_task_tools_handler,     // GET /history/tasks/:taskId/tools
+        crate::conversation_history::handlers::get_task_thinking_handler,  // GET /history/tasks/:taskId/thinking
     ),
     components(
         schemas(
@@ -61,6 +69,26 @@ use utoipa::{Modify, OpenApi};
             crate::shadow_git::DiffFile,
             crate::shadow_git::DiffResult,
             crate::shadow_git::handlers::ChangesErrorResponse,
+            // Conversation History schemas
+            crate::conversation_history::TaskHistorySummary,
+            crate::conversation_history::TaskHistoryListResponse,
+            crate::conversation_history::TaskDetailResponse,
+            crate::conversation_history::ConversationMessage,
+            crate::conversation_history::ContentBlockSummary,
+            crate::conversation_history::ToolCallDetail,
+            crate::conversation_history::FileInContextDetail,
+            crate::conversation_history::ModelUsageDetail,
+            crate::conversation_history::EnvironmentDetail,
+            crate::conversation_history::PaginatedMessagesResponse,
+            crate::conversation_history::FullMessageResponse,
+            crate::conversation_history::FullContentBlock,
+            crate::conversation_history::ToolCallTimelineEntry,
+            crate::conversation_history::ToolCallTimelineResponse,
+            crate::conversation_history::TaskToolsQuery,
+            crate::conversation_history::ThinkingBlockEntry,
+            crate::conversation_history::ThinkingBlocksResponse,
+            crate::conversation_history::TaskThinkingQuery,
+            crate::conversation_history::HistoryErrorResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -70,7 +98,8 @@ use utoipa::{Modify, OpenApi};
         (name = "agent", description = "AI agent and chat endpoints"),
         (name = "tools", description = "Tool discovery and execution endpoints for AI agents"),
         (name = "tool", description = "APIs suitable for AI agent tool use"),
-        (name = "changes", description = "Cline shadow Git checkpoint discovery and diff endpoints")
+        (name = "changes", description = "Cline shadow Git checkpoint discovery and diff endpoints"),
+        (name = "history", description = "Cline conversation history browsing and analytics endpoints")
     )
 )]
 pub struct PublicApiDoc;

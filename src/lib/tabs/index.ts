@@ -16,8 +16,11 @@ export { AgentTab } from './agent';
 // Changes tab is now a modular directory
 export { ChangesTab } from './changes';
 
+// History tab is now a modular directory
+export { HistoryTab } from './history';
+
 // Tab definitions for navigation
-export type TabId = 'my-jiras' | 'activity' | 'api' | 'agent' | 'changes';
+export type TabId = 'my-jiras' | 'activity' | 'api' | 'agent' | 'changes' | 'history';
 
 export interface TabDefinition {
   id: TabId;
@@ -31,4 +34,5 @@ export const tabs: TabDefinition[] = [
   { id: 'api', label: 'API' },
   { id: 'agent', label: 'Agent' },
   { id: 'changes', label: 'Changes' },
+  { id: 'history', label: 'History' },
 ];

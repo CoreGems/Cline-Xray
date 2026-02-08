@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff } from "./api";
+  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff } from "./api";
   import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult } from "./types";
 
   // ---- Workspace state ----
@@ -26,6 +26,14 @@
   let diffLoading = $state(false);
   let diffError: string | null = $state(null);
   let diffResult: DiffResult | null = $state(null);
+  let copyLabel = $state('📋 Copy');
+
+  // ---- Task Diff state ----
+  let taskDiffId: string | null = $state(null);
+  let taskDiffLoading = $state(false);
+  let taskDiffError: string | null = $state(null);
+  let taskDiffResult: DiffResult | null = $state(null);
+  let taskDiffCopyLabel = $state('📋 Copy');
 
   onMount(() => {
     loadWorkspaces(false);
@@ -102,6 +110,32 @@
       stepsError = e.message || String(e);
     } finally {
       stepsLoading = false;
+    }
+  }
+
+  async function loadTaskDiff(task: ClineTaskSummary, e: MouseEvent) {
+    e.stopPropagation(); // Don't toggle steps expansion
+    if (!selectedWorkspace) return;
+
+    if (taskDiffId === task.taskId) {
+      // Collapse
+      taskDiffId = null;
+      taskDiffResult = null;
+      taskDiffError = null;
+      return;
+    }
+
+    taskDiffId = task.taskId;
+    taskDiffLoading = true;
+    taskDiffError = null;
+    taskDiffResult = null;
+    taskDiffCopyLabel = '📋 Copy';
+    try {
+      taskDiffResult = await fetchTaskDiff(task.taskId, selectedWorkspace.id);
+    } catch (e: any) {
+      taskDiffError = e.message || String(e);
+    } finally {
+      taskDiffLoading = false;
     }
   }
 
@@ -256,6 +290,7 @@
               <th class="text-right px-4 py-3 font-medium text-gray-600">Steps</th>
               <th class="text-right px-4 py-3 font-medium text-gray-600">Files</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Last Changed</th>
+              <th class="text-left px-4 py-3 font-medium text-gray-600"></th>
             </tr>
           </thead>
           <tbody>
@@ -277,7 +312,79 @@
                 <td class="px-4 py-3 text-right font-mono text-gray-700">{task.steps}</td>
                 <td class="px-4 py-3 text-right font-mono text-gray-700">{task.filesChanged}</td>
                 <td class="px-4 py-3 text-gray-600 text-xs">{formatDate(task.lastModified)}</td>
+                <td class="px-4 py-3">
+                  <button
+                    onclick={(e) => loadTaskDiff(task, e)}
+                    class="text-xs font-medium px-2.5 py-1 rounded transition-colors {taskDiffId === task.taskId ? 'bg-purple-200 text-purple-800' : 'bg-purple-50 text-purple-700 hover:bg-purple-100'}"
+                  >
+                    {taskDiffId === task.taskId ? '▾ Hide Full Diff' : '▸ Full Diff'}
+                  </button>
+                </td>
               </tr>
+              <!-- Task-level Full Diff Panel -->
+              {#if taskDiffId === task.taskId}
+                <tr>
+                  <td colspan="7" class="p-0">
+                    <div class="bg-purple-50/50 border-t border-b border-purple-200 px-6 py-4">
+                      {#if taskDiffLoading}
+                        <div class="flex items-center gap-2 py-3">
+                          <svg class="animate-spin h-4 w-4 text-purple-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span class="text-sm text-gray-500">Computing full task diff...</span>
+                        </div>
+                      {:else if taskDiffError}
+                        <div class="text-sm text-red-600 py-2">Error: {taskDiffError}</div>
+                      {:else if taskDiffResult}
+                        <!-- Sticky header bar with copy button -->
+                        <div class="flex items-center justify-between mb-2 sticky top-0 bg-purple-50/90 backdrop-blur-sm py-1 z-10">
+                          <div class="text-[10px] text-gray-500 font-mono">
+                            <span class="font-semibold text-purple-700">Full Task Diff</span> · {shortHash(taskDiffResult.fromRef)} → {shortHash(taskDiffResult.toRef)} · {taskDiffResult.files.length} file{taskDiffResult.files.length !== 1 ? 's' : ''} · {Math.round(taskDiffResult.patch.length / 1024)}KB
+                          </div>
+                          <div class="flex items-center gap-2">
+                            {#if taskDiffResult.patch}
+                              <button
+                                onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(taskDiffResult!.patch); taskDiffCopyLabel = '✓ Copied!'; setTimeout(() => taskDiffCopyLabel = '📋 Copy Diff', 1500); }}
+                                class="text-xs font-medium px-3 py-1 rounded bg-purple-600 hover:bg-purple-700 text-white transition-colors shadow-sm"
+                              >
+                                {taskDiffCopyLabel}
+                              </button>
+                            {/if}
+                            <button
+                              onclick={(e) => { e.stopPropagation(); taskDiffId = null; taskDiffResult = null; taskDiffError = null; }}
+                              class="text-xs font-bold px-2 py-1 rounded bg-gray-200 hover:bg-red-100 text-gray-600 hover:text-red-700 transition-colors"
+                              title="Close diff"
+                            >✕</button>
+                          </div>
+                        </div>
+                        <!-- Unified diff (shown immediately, scrollable with visible scrollbar) -->
+                        {#if taskDiffResult.patch}
+                          <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; width: 100%; box-sizing: border-box;">{taskDiffResult.patch}</pre>
+                        {:else}
+                          <div class="text-xs text-gray-400 italic mb-3">No patch content (empty diff)</div>
+                        {/if}
+                        <!-- File list (collapsible) -->
+                        <details class="group">
+                          <summary class="text-[10px] font-medium text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700 select-none">
+                            Files changed ({taskDiffResult.files.length})
+                          </summary>
+                          <div class="mt-2 bg-white rounded border border-gray-200 p-2">
+                            {#each taskDiffResult.files as f}
+                              <div class="flex items-center gap-2 py-0.5 text-xs font-mono">
+                                <span class="{statusColor(f.status)} font-bold w-3 text-center">{statusIcon(f.status)}</span>
+                                <span class="text-gray-700 truncate">{f.path}</span>
+                                <span class="ml-auto text-green-600">+{f.linesAdded}</span>
+                                <span class="text-red-600">-{f.linesRemoved}</span>
+                              </div>
+                            {/each}
+                          </div>
+                        </details>
+                      {/if}
+                    </div>
+                  </td>
+                </tr>
+              {/if}
               <!-- Expanded Steps Panel -->
               {#if expandedTaskId === task.taskId}
                 <tr>
@@ -350,32 +457,41 @@
                                       {:else if diffError}
                                         <div class="text-xs text-red-600 py-1">Error: {diffError}</div>
                                       {:else if diffResult}
-                                        <div class="text-[10px] text-gray-400 mb-2 font-mono">
-                                          {shortHash(diffResult.fromRef)} → {shortHash(diffResult.toRef)}
-                                        </div>
-                                        <!-- File list -->
-                                        <div class="mb-3 bg-gray-50 rounded border border-gray-200 p-2">
-                                          <div class="text-[10px] font-medium text-gray-500 uppercase tracking-wide mb-1">
-                                            Files changed ({diffResult.files.length})
+                                        <div class="flex items-center justify-between mb-2">
+                                          <div class="text-[10px] text-gray-400 font-mono">
+                                            {shortHash(diffResult.fromRef)} → {shortHash(diffResult.toRef)} · {diffResult.files.length} file{diffResult.files.length !== 1 ? 's' : ''}
                                           </div>
-                                          {#each diffResult.files as f}
-                                            <div class="flex items-center gap-2 py-0.5 text-xs font-mono">
-                                              <span class="{statusColor(f.status)} font-bold w-3 text-center">{statusIcon(f.status)}</span>
-                                              <span class="text-gray-700 truncate">{f.path}</span>
-                                              <span class="ml-auto text-green-600">+{f.linesAdded}</span>
-                                              <span class="text-red-600">-{f.linesRemoved}</span>
-                                            </div>
-                                          {/each}
+                                          {#if diffResult.patch}
+                                            <button
+                                              onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(diffResult!.patch); copyLabel = '✓ Copied'; setTimeout(() => copyLabel = '📋 Copy', 1500); }}
+                                              class="text-[10px] font-medium px-2 py-0.5 rounded bg-gray-100 hover:bg-gray-200 text-gray-700 transition-colors"
+                                            >
+                                              {copyLabel}
+                                            </button>
+                                          {/if}
                                         </div>
-                                        <!-- Patch text -->
+                                        <!-- Unified diff (shown immediately) -->
                                         {#if diffResult.patch}
-                                          <details class="group">
-                                            <summary class="text-[10px] font-medium text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700 select-none">
-                                              Unified Diff ({Math.round(diffResult.patch.length / 1024)}KB)
-                                            </summary>
-                                            <pre class="mt-2 bg-gray-900 text-gray-100 text-[10px] leading-4 p-3 rounded overflow-x-auto max-h-80 font-mono">{diffResult.patch}</pre>
-                                          </details>
+                                          <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; max-height: 384px !important; width: 100%; box-sizing: border-box;">{diffResult.patch}</pre>
+                                        {:else}
+                                          <div class="text-xs text-gray-400 italic mb-3">No patch content (empty diff)</div>
                                         {/if}
+                                        <!-- File list (collapsible) -->
+                                        <details class="group">
+                                          <summary class="text-[10px] font-medium text-gray-500 uppercase tracking-wide cursor-pointer hover:text-gray-700 select-none">
+                                            Files changed ({diffResult.files.length})
+                                          </summary>
+                                          <div class="mt-2 bg-gray-50 rounded border border-gray-200 p-2">
+                                            {#each diffResult.files as f}
+                                              <div class="flex items-center gap-2 py-0.5 text-xs font-mono">
+                                                <span class="{statusColor(f.status)} font-bold w-3 text-center">{statusIcon(f.status)}</span>
+                                                <span class="text-gray-700 truncate">{f.path}</span>
+                                                <span class="ml-auto text-green-600">+{f.linesAdded}</span>
+                                                <span class="text-red-600">-{f.linesRemoved}</span>
+                                              </div>
+                                            {/each}
+                                          </div>
+                                        </details>
                                       {/if}
                                     </div>
                                   </td>

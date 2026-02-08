@@ -94,6 +94,43 @@ export async function fetchStepDiff(taskId: string, stepIndex: number, workspace
 }
 
 /**
+ * Fetch the full task diff (base→HEAD) for an entire task
+ * GET /changes/tasks/:taskId/diff?workspace=<id>&exclude=...
+ * @param taskId - the task ID
+ * @param workspaceId - the workspace ID
+ * @param excludes - optional pathspec exclusion patterns
+ */
+export async function fetchTaskDiff(
+  taskId: string,
+  workspaceId: string,
+  excludes: string[] = []
+): Promise<DiffResult> {
+  const apiInfo = await getApiInfo();
+  const params = new URLSearchParams({ workspace: workspaceId });
+  for (const ex of excludes) {
+    params.append('exclude', ex);
+  }
+
+  const response = await fetch(
+    `${apiInfo.base_url}/changes/tasks/${taskId}/diff?${params}`,
+    {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiInfo.token}`
+      }
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
  * Fetch tasks for a specific workspace from the REST API
  * GET /changes/tasks?workspace=<id>
  * @param workspaceId - the workspace ID to list tasks for

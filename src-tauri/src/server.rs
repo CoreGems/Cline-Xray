@@ -1,4 +1,5 @@
 use crate::api::{handlers, middleware::{auth_middleware, access_log_middleware}};
+use crate::conversation_history;
 use crate::openapi::{PublicApiDoc, AdminApiDoc};
 use crate::shadow_git;
 use crate::state::AppState;
@@ -56,8 +57,19 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
     let changes_routes = Router::new()
         .route("/changes/workspaces", get(shadow_git::list_workspaces_handler))
         .route("/changes/tasks", get(shadow_git::list_tasks_handler))
+        .route("/changes/tasks/:task_id/diff", get(shadow_git::task_diff_handler))
         .route("/changes/tasks/:task_id/steps", get(shadow_git::list_steps_handler))
         .route("/changes/tasks/:task_id/steps/:index/diff", get(shadow_git::step_diff_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
+    // Conversation History routes (protected)
+    let history_routes = Router::new()
+        .route("/history/tasks", get(conversation_history::list_history_tasks_handler))
+        .route("/history/tasks/:task_id", get(conversation_history::get_task_detail_handler))
+        .route("/history/tasks/:task_id/messages", get(conversation_history::get_task_messages_handler))
+        .route("/history/tasks/:task_id/messages/:index", get(conversation_history::get_single_message_handler))
+        .route("/history/tasks/:task_id/tools", get(conversation_history::get_task_tools_handler))
+        .route("/history/tasks/:task_id/thinking", get(conversation_history::get_task_thinking_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     Router::new()
@@ -65,6 +77,7 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .merge(protected_routes)
         .merge(tool_routes)
         .merge(changes_routes)
+        .merge(history_routes)
         // Add access logging middleware to all routes
         .layer(middleware::from_fn_with_state(state.clone(), access_log_middleware))
         .layer(cors)

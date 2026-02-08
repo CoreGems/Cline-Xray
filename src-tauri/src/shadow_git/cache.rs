@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use super::types::{TasksResponse, WorkspacesResponse};
+use super::types::{StepsResponse, TasksResponse, WorkspacesResponse};
 
 const CACHE_DIR: &str = "jira-dashboard/shadow_git_cache";
 const WORKSPACES_FILE: &str = "workspaces.json";
@@ -111,6 +111,65 @@ pub fn save_tasks(workspace_id: &str, data: &TasksResponse) {
                 }
             }
             Err(e) => log::warn!("Failed to serialize tasks cache for {}: {}", workspace_id, e),
+        }
+    }
+}
+
+// ============ Steps ============
+
+/// Steps cache file name: steps_<workspace_id>_<task_id>.json
+fn steps_file(workspace_id: &str, task_id: &str) -> String {
+    format!("steps_{}_{}.json", workspace_id, task_id)
+}
+
+/// Cache key for steps: "workspace_id:task_id"
+pub fn steps_cache_key(workspace_id: &str, task_id: &str) -> String {
+    format!("{}:{}", workspace_id, task_id)
+}
+
+/// Load cached steps for a task from disk
+pub fn load_steps(workspace_id: &str, task_id: &str) -> Option<StepsResponse> {
+    let path = cache_dir()?.join(steps_file(workspace_id, task_id));
+    match std::fs::read_to_string(&path) {
+        Ok(json) => {
+            match serde_json::from_str::<StepsResponse>(&json) {
+                Ok(data) => {
+                    log::info!(
+                        "Loaded {} steps for task {} (workspace {}) from disk cache",
+                        data.steps.len(),
+                        task_id,
+                        workspace_id
+                    );
+                    Some(data)
+                }
+                Err(e) => {
+                    log::warn!("Failed to parse steps cache for {}:{}: {}", workspace_id, task_id, e);
+                    None
+                }
+            }
+        }
+        Err(_) => None,
+    }
+}
+
+/// Save steps for a task to disk cache
+pub fn save_steps(workspace_id: &str, task_id: &str, data: &StepsResponse) {
+    if let Some(dir) = cache_dir() {
+        let path = dir.join(steps_file(workspace_id, task_id));
+        match serde_json::to_string_pretty(data) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(&path, json) {
+                    log::warn!("Failed to write steps cache for {}:{}: {}", workspace_id, task_id, e);
+                } else {
+                    log::info!(
+                        "Saved {} steps for task {} (workspace {}) to disk cache",
+                        data.steps.len(),
+                        task_id,
+                        workspace_id
+                    );
+                }
+            }
+            Err(e) => log::warn!("Failed to serialize steps cache for {}:{}: {}", workspace_id, task_id, e),
         }
     }
 }

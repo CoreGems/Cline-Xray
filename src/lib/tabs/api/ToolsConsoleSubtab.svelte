@@ -1,7 +1,6 @@
 <script lang="ts">
-  // Tools Console - Invoke tools through the ToolRuntime choke-point
-  import { onMount } from 'svelte';
   import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
 
   /** API connection info from Tauri backend */
   interface ApiInfo {
