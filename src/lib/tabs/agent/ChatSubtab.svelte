@@ -1,7 +1,8 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { sendChatMessage } from "./api";
-  import type { ChatMessage, ChatSession } from "./types";
+  import { navigationStore } from "../../stores/navigationStore.svelte";
+  import type { ChatMessage, ChatSession, ChatAttachment } from "./types";
 
   const STORAGE_KEY = 'agent-chat-sessions';
 
@@ -17,12 +18,35 @@
   let isLoading = $state(false);
   let error: string | null = $state(null);
 
+  // Attachment state (in-memory context artifacts from "Ask LLM")
+  let attachments: ChatAttachment[] = $state([]);
+  let previewAttachmentId: string | null = $state(null);
+
   // Load sessions from localStorage on mount (once)
   $effect(() => {
     if (!initialized) {
       untrack(() => {
         loadSessions();
         initialized = true;
+      });
+    }
+  });
+
+  // Check for incoming "Ask LLM" payload from navigation store
+  $effect(() => {
+    if (initialized && navigationStore.hasPendingPayload) {
+      untrack(() => {
+        const payload = navigationStore.consumeChatPayload();
+        if (payload && payload.attachments.length > 0) {
+          createNewSession();
+          attachments = payload.attachments;
+          previewAttachmentId = null;
+          if (payload.initialMessage) {
+            inputMessage = payload.initialMessage;
+          }
+          // Persist attachments with the new session
+          updateCurrentSessionAttachments();
+        }
       });
     }
   });
@@ -66,6 +90,7 @@
     if (sessionIndex >= 0) {
       const session = sessions[sessionIndex];
       session.messages = [...messages];
+      session.attachments = attachments.length > 0 ? [...attachments] : undefined;
       session.updatedAt = Date.now();
       
       // Update title from first user message if still default
@@ -78,6 +103,17 @@
       
       // Move to top of list
       sessions = [session, ...sessions.filter(s => s.id !== activeSessionId)];
+      saveSessions();
+    }
+  }
+
+  // Update only attachments on current session (used after Ask LLM payload)
+  function updateCurrentSessionAttachments() {
+    if (!activeSessionId) return;
+    const session = sessions.find(s => s.id === activeSessionId);
+    if (session) {
+      session.attachments = attachments.length > 0 ? [...attachments] : undefined;
+      session.updatedAt = Date.now();
       saveSessions();
     }
   }
@@ -104,6 +140,8 @@
     if (session) {
       activeSessionId = sessionId;
       messages = [...session.messages];
+      attachments = session.attachments ? [...session.attachments] : [];
+      previewAttachmentId = null;
       error = null;
     }
   }
@@ -143,8 +181,13 @@
 
     isLoading = true;
     try {
+      // On the first message of a session, prepend attachment context
+      const isFirstMessage = messages.length === 1;
+      const contextPrefix = (isFirstMessage && attachments.length > 0) ? buildAttachmentContext() : '';
+      const messageToSend = contextPrefix + userMessage;
+
       const historyToSend = messages.slice(0, -1); // Send history without the message we just added
-      const data = await sendChatMessage(userMessage, historyToSend);
+      const data = await sendChatMessage(messageToSend, historyToSend);
       
       // Add AI response to chat
       messages = [...messages, { role: 'model', content: data.response }];
@@ -171,16 +214,57 @@
   // Clear current chat (but keep session)
   function clearChat() {
     messages = [];
+    attachments = [];
+    previewAttachmentId = null;
     error = null;
     if (activeSessionId) {
       const session = sessions.find(s => s.id === activeSessionId);
       if (session) {
         session.messages = [];
+        session.attachments = undefined;
         session.title = 'New Chat';
         session.updatedAt = Date.now();
         saveSessions();
       }
     }
+  }
+
+  // ============== Attachment Helpers ==============
+
+  function attachmentIcon(type: ChatAttachment['type']): string {
+    switch (type) {
+      case 'prompts': return '📝';
+      case 'files': return '📄';
+      case 'diff': return '📦';
+      default: return '📎';
+    }
+  }
+
+  function attachmentBg(type: ChatAttachment['type']): string {
+    switch (type) {
+      case 'prompts': return 'bg-blue-50 border-blue-200 text-blue-700';
+      case 'files': return 'bg-green-50 border-green-200 text-green-700';
+      case 'diff': return 'bg-amber-50 border-amber-200 text-amber-700';
+      default: return 'bg-gray-50 border-gray-200 text-gray-700';
+    }
+  }
+
+  function removeAttachment(id: string) {
+    attachments = attachments.filter(a => a.id !== id);
+    if (previewAttachmentId === id) previewAttachmentId = null;
+    updateCurrentSessionAttachments();
+  }
+
+  function togglePreview(id: string) {
+    previewAttachmentId = previewAttachmentId === id ? null : id;
+  }
+
+  /** Build context prefix from attachments for the first message */
+  function buildAttachmentContext(): string {
+    if (attachments.length === 0) return '';
+    return attachments.map(a =>
+      `--- ${a.label} ---\n${a.content}`
+    ).join('\n\n') + '\n\n---\nUser message:\n';
   }
 
   // Format timestamp
@@ -376,6 +460,53 @@
 
     <!-- Input Area -->
     <div class="border-t border-gray-200 bg-white p-4">
+      <!-- Attachment Bar (shown when attachments exist) -->
+      {#if attachments.length > 0}
+        <div class="mb-3">
+          <div class="flex items-center gap-2 flex-wrap">
+            {#each attachments as att (att.id)}
+              <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium transition-colors {attachmentBg(att.type)} {previewAttachmentId === att.id ? 'ring-2 ring-offset-1 ring-blue-400' : ''}">
+                <button
+                  onclick={() => togglePreview(att.id)}
+                  class="flex items-center gap-1.5 hover:opacity-80"
+                  title="Click to preview"
+                >
+                  <span>{attachmentIcon(att.type)}</span>
+                  <span>{att.label}</span>
+                </button>
+                <button
+                  onclick={() => removeAttachment(att.id)}
+                  class="ml-0.5 p-0.5 rounded hover:bg-red-100 hover:text-red-600 transition-colors"
+                  title="Remove attachment"
+                >
+                  <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                  </svg>
+                </button>
+              </div>
+            {/each}
+          </div>
+
+          <!-- Preview Panel (expandable) -->
+          {#if previewAttachmentId}
+            {@const previewAtt = attachments.find(a => a.id === previewAttachmentId)}
+            {#if previewAtt}
+              <div class="mt-2 border border-gray-200 rounded-lg overflow-hidden bg-gray-50">
+                <div class="px-3 py-1.5 bg-gray-100 border-b border-gray-200 flex items-center justify-between">
+                  <span class="text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                    {attachmentIcon(previewAtt.type)} {previewAtt.label}
+                  </span>
+                  <span class="text-[10px] text-gray-400">
+                    {(previewAtt.content.length / 1024).toFixed(1)} KB
+                  </span>
+                </div>
+                <pre class="max-h-48 overflow-auto p-3 text-[10px] leading-relaxed font-mono text-gray-700 whitespace-pre-wrap break-all m-0">{previewAtt.content.length > 50000 ? previewAtt.content.substring(0, 50000) + '\n\n... [truncated for preview]' : previewAtt.content}</pre>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
       <div class="flex gap-2">
         <div class="flex-1 relative">
           <textarea

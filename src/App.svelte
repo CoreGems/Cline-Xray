@@ -3,11 +3,9 @@
   import TopBar from "./lib/TopBar.svelte";
   import SettingsModal from "./lib/SettingsModal.svelte";
   import { jiraStore } from "./lib/stores/jiraStore.svelte";
+  import { navigationStore } from "./lib/stores/navigationStore.svelte";
   import { MyJirasTab, ActivityTab, ApiTab, AgentTab, ChangesTab, HistoryTab, type TabId } from "./lib/tabs";
   import type { JiraSettings } from "./types";
-
-  // Tab state
-  let activeTab: TabId = $state('my-jiras');
 
   // Local UI state (not related to Jira data)
   let showSettings = $state(false);
@@ -19,7 +17,7 @@
   });
 
   function handleTabChange(tabId: TabId) {
-    activeTab = tabId;
+    navigationStore.activeTab = tabId;
   }
 
   function handleRefresh() {
@@ -70,7 +68,7 @@
   {:else}
     <!-- Main App Layout -->
     <TopBar
-      {activeTab}
+      activeTab={navigationStore.activeTab}
       onTabChange={handleTabChange}
       onRefresh={handleRefresh}
       onSettingsClick={() => showSettings = true}
@@ -78,17 +76,17 @@
 
     <!-- Tab Content Area -->
     <div class="flex-1 flex overflow-hidden">
-      {#if activeTab === 'my-jiras'}
+      {#if navigationStore.activeTab === 'my-jiras'}
         <MyJirasTab />
-      {:else if activeTab === 'activity'}
+      {:else if navigationStore.activeTab === 'activity'}
         <ActivityTab />
-      {:else if activeTab === 'api'}
+      {:else if navigationStore.activeTab === 'api'}
         <ApiTab />
-      {:else if activeTab === 'agent'}
+      {:else if navigationStore.activeTab === 'agent'}
         <AgentTab />
-      {:else if activeTab === 'changes'}
+      {:else if navigationStore.activeTab === 'changes'}
         <ChangesTab />
-      {:else if activeTab === 'history'}
+      {:else if navigationStore.activeTab === 'history'}
         <HistoryTab />
       {/if}
     </div>

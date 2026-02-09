@@ -41,6 +41,8 @@ use utoipa::{Modify, OpenApi};
         crate::conversation_history::handlers::get_task_files_handler,     // GET /history/tasks/:taskId/files
         crate::conversation_history::handlers::get_task_subtasks_handler,  // GET /history/tasks/:taskId/subtasks
         crate::conversation_history::handlers::get_history_stats_handler,  // GET /history/stats
+        // Latest composite endpoint
+        crate::latest::handler::get_latest_handler,                        // GET /latest
     ),
     components(
         schemas(
@@ -98,6 +100,9 @@ use utoipa::{Modify, OpenApi};
             crate::conversation_history::SubtaskEntry,
             crate::conversation_history::SubtasksResponse,
             crate::conversation_history::HistoryErrorResponse,
+            // Latest composite schemas
+            crate::latest::LatestResponse,
+            crate::latest::LatestErrorResponse,
         )
     ),
     modifiers(&SecurityAddon),

@@ -1,5 +1,6 @@
 use crate::api::{handlers, middleware::{auth_middleware, access_log_middleware}};
 use crate::conversation_history;
+use crate::latest;
 use crate::openapi::{PublicApiDoc, AdminApiDoc};
 use crate::shadow_git;
 use crate::state::AppState;
@@ -63,6 +64,11 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/changes/tasks/:task_id/subtasks/:subtask_index/diff", get(shadow_git::subtask_diff_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
+    // Latest composite route (protected)
+    let latest_routes = Router::new()
+        .route("/latest", get(latest::get_latest_handler))
+        .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
+
     // Conversation History routes (protected)
     let history_routes = Router::new()
         .route("/history/tasks", get(conversation_history::list_history_tasks_handler))
@@ -81,6 +87,7 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .merge(protected_routes)
         .merge(tool_routes)
         .merge(changes_routes)
+        .merge(latest_routes)
         .merge(history_routes)
         // Add access logging middleware to all routes
         .layer(middleware::from_fn_with_state(state.clone(), access_log_middleware))

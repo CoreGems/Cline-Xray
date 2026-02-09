@@ -2,10 +2,8 @@
   // Agent Tab - Main container with subtab navigation
   import ChatSubtab from "./ChatSubtab.svelte";
   import AgentChatSubtab from "./AgentChatSubtab.svelte";
-  import type { AgentSubTab, SubTabDefinition } from "./types";
-  
-  // Subtab state
-  let activeSubTab: AgentSubTab = $state('Agent Chat');
+  import { navigationStore } from "../../stores/navigationStore.svelte";
+  import type { SubTabDefinition } from "./types";
   
   const subTabs: SubTabDefinition[] = [
     { id: 'Agent Chat', label: 'Agent Chat' },
@@ -19,8 +17,8 @@
     <div class="flex gap-1">
       {#each subTabs as tab}
         <button
-          onclick={() => activeSubTab = tab.id}
-          class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {activeSubTab === tab.id
+          onclick={() => navigationStore.activeAgentSubTab = tab.id}
+          class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {navigationStore.activeAgentSubTab === tab.id
             ? 'border-blue-500 text-blue-600'
             : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}"
         >
@@ -31,9 +29,9 @@
   </div>
 
   <!-- Subtab Content -->
-  {#if activeSubTab === 'Chat'}
+  {#if navigationStore.activeAgentSubTab === 'Chat'}
     <ChatSubtab />
-  {:else if activeSubTab === 'Agent Chat'}
+  {:else if navigationStore.activeAgentSubTab === 'Agent Chat'}
     <AgentChatSubtab />
   {/if}
 </div>

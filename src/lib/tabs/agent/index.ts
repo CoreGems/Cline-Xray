@@ -10,6 +10,7 @@ export { default as AgentChatSubtab } from './AgentChatSubtab.svelte';
 
 // Types
 export type {
+  ChatAttachment,
   ChatMessage,
   ChatSession,
   AgentChatMessage,

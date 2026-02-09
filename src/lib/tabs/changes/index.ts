@@ -6,14 +6,17 @@ export { default as ChangesTab } from './ChangesTab.svelte';
 
 // Subtab components
 export { default as TaskListSubtab } from './TaskListSubtab.svelte';
+export { default as LatestSubtab } from './LatestSubtab.svelte';
 
 // Types
 export type {
   WorkspaceInfo,
   WorkspacesResponse,
+  LatestResponse,
+  SubtaskSummaryItem,
   ChangesSubTab,
   SubTabDefinition
 } from './types';
 
 // API functions
-export { fetchWorkspaces } from './api';
+export { fetchWorkspaces, fetchLatest } from './api';

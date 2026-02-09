@@ -1,12 +1,14 @@
 <script lang="ts">
   // Changes Tab - Main container with subtab navigation
   import TaskListSubtab from "./TaskListSubtab.svelte";
+  import LatestSubtab from "./LatestSubtab.svelte";
   import type { ChangesSubTab, SubTabDefinition } from "./types";
 
   // Subtab state
-  let activeSubTab: ChangesSubTab = $state('Tasks');
+  let activeSubTab: ChangesSubTab = $state('Latest');
 
   const subTabs: SubTabDefinition[] = [
+    { id: 'Latest', label: '⚡ Latest' },
     { id: 'Tasks', label: 'Tasks' },
     { id: 'Diff', label: 'Diff' },
     { id: 'Export', label: 'Export' },
@@ -31,7 +33,9 @@
   </div>
 
   <!-- Subtab Content -->
-  {#if activeSubTab === 'Tasks'}
+  {#if activeSubTab === 'Latest'}
+    <LatestSubtab />
+  {:else if activeSubTab === 'Tasks'}
     <TaskListSubtab />
   {:else if activeSubTab === 'Diff'}
     <div class="flex-1 flex items-center justify-center text-gray-400 text-sm">

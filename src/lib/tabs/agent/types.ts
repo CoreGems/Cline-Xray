@@ -1,5 +1,19 @@
 // Agent Tab Types
 
+/** An attachment (context artifact) for a chat session — in-memory, not a real file */
+export interface ChatAttachment {
+  /** Unique ID for this attachment (used as UI key) */
+  id: string;
+  /** Display label (e.g., "All Prompts (3)", "Unified Diff (45KB)") */
+  label: string;
+  /** Semantic type for styling and icon selection */
+  type: 'prompts' | 'files' | 'diff' | 'text';
+  /** The plain-text content of the attachment */
+  content: string;
+  /** Optional metadata (file count, size, etc.) */
+  meta?: Record<string, any>;
+}
+
 /** A single chat message in the conversation */
 export interface ChatMessage {
   /** Role of the message sender: "user" or "model" */
@@ -16,6 +30,8 @@ export interface ChatSession {
   title: string;
   /** Messages in this session */
   messages: ChatMessage[];
+  /** In-memory attachments (context artifacts from "Ask LLM" or similar) */
+  attachments?: ChatAttachment[];
   /** Timestamp when the session was created */
   createdAt: number;
   /** Timestamp when the session was last updated */

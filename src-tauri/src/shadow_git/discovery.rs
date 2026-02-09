@@ -417,6 +417,14 @@ pub fn get_task_diff(
     git_dir: &PathBuf,
     excludes: &[String],
 ) -> Result<super::types::DiffResult, String> {
+    // Verify git_dir exists on disk (Cline may rename .git ↔ .git_disabled during tasks)
+    if !git_dir.exists() {
+        return Err(format!(
+            "Git directory does not exist (Cline may have disabled it): {}",
+            git_dir.display()
+        ));
+    }
+
     let commits = parse_checkpoint_commits(git_dir);
 
     // Filter to this task, reverse to chronological order (oldest first)
@@ -439,15 +447,24 @@ pub fn get_task_diff(
 
     let git_dir_str = git_dir.to_string_lossy().to_string();
 
+    log::debug!(
+        "Task diff: git --git-dir {} diff --numstat {}  {} (excludes={:?})",
+        git_dir_str, from_ref, to_ref, excludes
+    );
+
     // Build numstat args with exclude patterns
+    // Use ":/" (repo root) instead of "." (CWD-relative) to avoid pathspec issues
     let mut numstat_args = vec![
         "--git-dir".to_string(), git_dir_str.clone(),
         "diff".to_string(), "--numstat".to_string(),
         from_ref.clone(), to_ref.clone(),
-        "--".to_string(), ".".to_string(),
     ];
-    for ex in excludes {
-        numstat_args.push(format!(":(exclude){}", ex));
+    if !excludes.is_empty() {
+        numstat_args.push("--".to_string());
+        numstat_args.push(":/".to_string());
+        for ex in excludes {
+            numstat_args.push(format!(":(exclude){}", ex));
+        }
     }
 
     let numstat_output = Command::new("git")
@@ -456,8 +473,24 @@ pub fn get_task_diff(
         .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
 
     let files = if numstat_output.status.success() {
-        parse_numstat(&String::from_utf8_lossy(&numstat_output.stdout))
+        let stdout = String::from_utf8_lossy(&numstat_output.stdout);
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        if !stderr.is_empty() {
+            log::warn!("git diff --numstat stderr: {}", stderr.trim());
+        }
+        if stdout.trim().is_empty() {
+            log::warn!(
+                "git diff --numstat returned empty stdout for task {} ({} → {})",
+                task_id, from_ref, to_ref
+            );
+        }
+        parse_numstat(&stdout)
     } else {
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        log::warn!(
+            "git diff --numstat failed (exit={}): {}. Trying diff-tree fallback.",
+            numstat_output.status, stderr.trim()
+        );
         // Fallback: try without parent (root commit scenario)
         let mut fallback_args = vec![
             "--git-dir".to_string(), git_dir_str.clone(),
@@ -465,13 +498,19 @@ pub fn get_task_diff(
             "--no-commit-id".to_string(), "-r".to_string(),
             to_ref.clone(),
         ];
-        for ex in excludes {
-            fallback_args.push(format!(":(exclude){}", ex));
+        if !excludes.is_empty() {
+            for ex in excludes {
+                fallback_args.push(format!(":(exclude){}", ex));
+            }
         }
         let dt_out = Command::new("git")
             .args(&fallback_args)
             .output()
             .map_err(|e| format!("Failed to run git diff-tree: {}", e))?;
+        if !dt_out.status.success() {
+            let dt_stderr = String::from_utf8_lossy(&dt_out.stderr);
+            log::error!("git diff-tree also failed: {}", dt_stderr.trim());
+        }
         parse_numstat(&String::from_utf8_lossy(&dt_out.stdout))
     };
 
@@ -480,10 +519,13 @@ pub fn get_task_diff(
         "--git-dir".to_string(), git_dir_str.clone(),
         "diff".to_string(),
         from_ref.clone(), to_ref.clone(),
-        "--".to_string(), ".".to_string(),
     ];
-    for ex in excludes {
-        patch_args.push(format!(":(exclude){}", ex));
+    if !excludes.is_empty() {
+        patch_args.push("--".to_string());
+        patch_args.push(":/".to_string());
+        for ex in excludes {
+            patch_args.push(format!(":(exclude){}", ex));
+        }
     }
 
     let patch_output = Command::new("git")
@@ -492,8 +534,14 @@ pub fn get_task_diff(
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
 
     let patch = if patch_output.status.success() {
+        let stderr = String::from_utf8_lossy(&patch_output.stderr);
+        if !stderr.is_empty() {
+            log::warn!("git diff patch stderr: {}", stderr.trim());
+        }
         String::from_utf8_lossy(&patch_output.stdout).to_string()
     } else {
+        let stderr = String::from_utf8_lossy(&patch_output.stderr);
+        log::warn!("git diff patch failed (exit={}): {}. Trying diff-tree fallback.", patch_output.status, stderr.trim());
         // Fallback for root commit
         let dt_out = Command::new("git")
             .args([
@@ -605,6 +653,14 @@ pub fn get_subtask_diff(
     git_dir: &PathBuf,
     excludes: &[String],
 ) -> Result<super::types::DiffResult, String> {
+    // Verify git_dir exists on disk (Cline may rename .git ↔ .git_disabled during tasks)
+    if !git_dir.exists() {
+        return Err(format!(
+            "Git directory does not exist (Cline may have disabled it): {}",
+            git_dir.display()
+        ));
+    }
+
     // 1. Get subtask boundaries from conversation_history
     let subtasks = crate::conversation_history::subtasks::parse_task_subtasks(task_id)
         .ok_or_else(|| format!("No subtask data for task '{}' (ui_messages.json not found or no task entry)", task_id))?;
@@ -645,15 +701,24 @@ pub fn get_subtask_diff(
 
     let git_dir_str = git_dir.to_string_lossy().to_string();
 
+    log::debug!(
+        "Subtask diff: git --git-dir {} diff --numstat {} {} (subtask #{}, excludes={:?})",
+        git_dir_str, from_ref, to_ref, subtask_index, excludes
+    );
+
     // 5. Build numstat args with exclude patterns
+    // Do NOT use "-- ." pathspec (CWD-relative) — omit pathspec unless excludes are needed
     let mut numstat_args = vec![
         "--git-dir".to_string(), git_dir_str.clone(),
         "diff".to_string(), "--numstat".to_string(),
         from_ref.clone(), to_ref.clone(),
-        "--".to_string(), ".".to_string(),
     ];
-    for ex in excludes {
-        numstat_args.push(format!(":(exclude){}", ex));
+    if !excludes.is_empty() {
+        numstat_args.push("--".to_string());
+        numstat_args.push(":/".to_string());
+        for ex in excludes {
+            numstat_args.push(format!(":(exclude){}", ex));
+        }
     }
 
     let numstat_output = Command::new("git")
@@ -662,8 +727,24 @@ pub fn get_subtask_diff(
         .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
 
     let files = if numstat_output.status.success() {
-        parse_numstat(&String::from_utf8_lossy(&numstat_output.stdout))
+        let stdout = String::from_utf8_lossy(&numstat_output.stdout);
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        if !stderr.is_empty() {
+            log::warn!("git diff --numstat stderr (subtask #{}): {}", subtask_index, stderr.trim());
+        }
+        if stdout.trim().is_empty() {
+            log::warn!(
+                "git diff --numstat returned empty for subtask #{} ({} → {})",
+                subtask_index, from_ref, to_ref
+            );
+        }
+        parse_numstat(&stdout)
     } else {
+        let stderr = String::from_utf8_lossy(&numstat_output.stderr);
+        log::warn!(
+            "git diff --numstat failed for subtask #{} (exit={}): {}. Trying diff-tree fallback.",
+            subtask_index, numstat_output.status, stderr.trim()
+        );
         // Fallback for root commit
         let mut fallback_args = vec![
             "--git-dir".to_string(), git_dir_str.clone(),
@@ -671,13 +752,19 @@ pub fn get_subtask_diff(
             "--no-commit-id".to_string(), "-r".to_string(),
             to_ref.clone(),
         ];
-        for ex in excludes {
-            fallback_args.push(format!(":(exclude){}", ex));
+        if !excludes.is_empty() {
+            for ex in excludes {
+                fallback_args.push(format!(":(exclude){}", ex));
+            }
         }
         let dt_out = Command::new("git")
             .args(&fallback_args)
             .output()
             .map_err(|e| format!("Failed to run git diff-tree: {}", e))?;
+        if !dt_out.status.success() {
+            let dt_stderr = String::from_utf8_lossy(&dt_out.stderr);
+            log::error!("git diff-tree also failed for subtask #{}: {}", subtask_index, dt_stderr.trim());
+        }
         parse_numstat(&String::from_utf8_lossy(&dt_out.stdout))
     };
 
@@ -686,10 +773,13 @@ pub fn get_subtask_diff(
         "--git-dir".to_string(), git_dir_str.clone(),
         "diff".to_string(),
         from_ref.clone(), to_ref.clone(),
-        "--".to_string(), ".".to_string(),
     ];
-    for ex in excludes {
-        patch_args.push(format!(":(exclude){}", ex));
+    if !excludes.is_empty() {
+        patch_args.push("--".to_string());
+        patch_args.push(":/".to_string());
+        for ex in excludes {
+            patch_args.push(format!(":(exclude){}", ex));
+        }
     }
 
     let patch_output = Command::new("git")
@@ -698,8 +788,17 @@ pub fn get_subtask_diff(
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
 
     let patch = if patch_output.status.success() {
+        let stderr = String::from_utf8_lossy(&patch_output.stderr);
+        if !stderr.is_empty() {
+            log::warn!("git diff patch stderr (subtask #{}): {}", subtask_index, stderr.trim());
+        }
         String::from_utf8_lossy(&patch_output.stdout).to_string()
     } else {
+        let stderr = String::from_utf8_lossy(&patch_output.stderr);
+        log::warn!(
+            "git diff patch failed for subtask #{} (exit={}): {}. Trying diff-tree fallback.",
+            subtask_index, patch_output.status, stderr.trim()
+        );
         let dt_out = Command::new("git")
             .args([
                 "--git-dir", &git_dir_str,
@@ -721,6 +820,30 @@ pub fn get_subtask_diff(
         from_ref,
         to_ref,
     })
+}
+
+/// Find which workspace contains a given task_id by scanning all workspaces.
+///
+/// Returns (workspace_id, git_dir_path) on first match.
+/// Iterates all checkpoint workspaces and checks their commit subjects for the task_id.
+pub fn find_workspace_for_task(task_id: &str) -> Option<(String, PathBuf)> {
+    let workspaces = find_workspaces();
+
+    for ws in &workspaces {
+        let git_dir = PathBuf::from(&ws.git_dir);
+        let commits = parse_checkpoint_commits(&git_dir);
+        let has_task = commits.iter().any(|(_, tid, _)| tid == task_id);
+        if has_task {
+            log::info!(
+                "Resolved task {} → workspace {} (git_dir: {})",
+                task_id, ws.id, ws.git_dir
+            );
+            return Some((ws.id.clone(), git_dir));
+        }
+    }
+
+    log::warn!("No workspace found containing task {}", task_id);
+    None
 }
 
 /// Parse git --numstat output into DiffFile vec.

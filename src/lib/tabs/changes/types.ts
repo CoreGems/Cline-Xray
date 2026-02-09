@@ -98,8 +98,66 @@ export interface ApiInfo {
   token: string;
 }
 
+/** Summary of a subtask (no diff — loaded on demand) */
+export interface SubtaskSummaryItem {
+  /** Subtask index (0 = initial, 1+ = feedback) */
+  subtaskIndex: number;
+  /** Whether this is the initial task prompt */
+  isInitialTask: boolean;
+  /** The prompt text */
+  prompt: string;
+  /** ISO 8601 timestamp */
+  timestamp: string;
+  /** Number of API messages */
+  messageCount: number;
+  /** Number of tool calls */
+  toolCallCount: number;
+  /** Tool names used */
+  toolsUsed: string[];
+}
+
+/** Response from GET /latest */
+export interface LatestResponse {
+  /** Task ID */
+  taskId: string;
+  /** Subtask index (0 = initial, 1+ = feedback). Null if scope=task */
+  subtaskIndex: number | null;
+  /** Whether this is the initial task prompt */
+  isInitialTask: boolean | null;
+  /** Total subtasks in this task */
+  totalSubtasks: number;
+  /** The prompt text */
+  prompt: string;
+  /** ISO 8601 timestamp of the prompt */
+  promptTimestamp: string;
+  /** Diff result (files + patch). Null if no checkpoint data */
+  diff: DiffResult | null;
+  /** Reason why diff is null */
+  noDiffReason: string | null;
+  /** First message index in api_conversation_history */
+  messageRangeStart: number | null;
+  /** Last message index (inclusive) */
+  messageRangeEnd: number | null;
+  /** Number of API messages */
+  messageCount: number;
+  /** Number of tool calls */
+  toolCallCount: number;
+  /** Tool names used (deduplicated) */
+  toolsUsed: string[];
+  /** Workspace ID */
+  workspaceId: string | null;
+  /** ISO 8601 task start time */
+  taskStartedAt: string;
+  /** ISO 8601 task end time */
+  taskEndedAt: string | null;
+  /** Scope used: "subtask" or "task" */
+  scope: string;
+  /** All subtasks in this task (metadata only, no diffs — loaded on demand) */
+  subtasks: SubtaskSummaryItem[];
+}
+
 /** Available subtabs in the Changes tab */
-export type ChangesSubTab = 'Tasks' | 'Diff' | 'Export';
+export type ChangesSubTab = 'Tasks' | 'Diff' | 'Latest' | 'Export';
 
 /** Subtab definition */
 export interface SubTabDefinition {

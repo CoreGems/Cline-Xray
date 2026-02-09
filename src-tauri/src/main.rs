@@ -5,6 +5,7 @@ mod api;
 mod config;
 mod conversation_history;
 mod jira;
+mod latest;
 mod logging;
 mod openapi;
 mod server;

@@ -1,7 +1,7 @@
 // Changes Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult } from "./types";
+import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -160,6 +160,41 @@ export async function fetchSubtaskDiff(
       }
     }
   );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch the latest task/subtask prompt + diff in a single call
+ * GET /latest?scope=<scope>&exclude=...
+ * @param scope - "subtask" (default) or "task" (full task diff)
+ * @param excludes - optional pathspec exclusion patterns
+ */
+export async function fetchLatest(
+  scope: string = 'subtask',
+  excludes: string[] = []
+): Promise<LatestResponse> {
+  const apiInfo = await getApiInfo();
+  const params = new URLSearchParams();
+  if (scope !== 'subtask') params.set('scope', scope);
+  for (const ex of excludes) {
+    params.append('exclude', ex);
+  }
+  const qs = params.toString();
+  const url = qs ? `${apiInfo.base_url}/latest?${qs}` : `${apiInfo.base_url}/latest`;
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
+  });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
