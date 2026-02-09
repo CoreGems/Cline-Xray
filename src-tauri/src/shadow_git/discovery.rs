@@ -544,6 +544,8 @@ pub fn get_task_diff(
         }
     }
 
+    git_commands.push(format!("git {}", patch_args.join(" ")));
+
     let patch_output = Command::new("git")
         .args(&patch_args)
         .output()

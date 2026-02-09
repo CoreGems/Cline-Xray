@@ -8,6 +8,7 @@
 pub mod types;
 pub mod discovery;
 pub mod cache;
+pub mod cleanup;
 pub mod handlers;
 
 pub use types::*;

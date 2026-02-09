@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::state::AppState;
-use super::{cache, discovery};
+use super::{cache, cleanup, discovery};
 use super::types::{DiffResult, StepsResponse, TasksResponse, WorkspacesResponse};
+use super::cleanup::NukeWorkspaceResponse;
 
 // ============ In-memory caches ============
 
@@ -755,6 +756,107 @@ pub async fn subtask_diff_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ChangesErrorResponse {
                     error: format!("Failed to compute subtask diff: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Nuke a workspace's checkpoint history
+///
+/// Deletes ALL checkpoint history for the specified workspace by removing the
+/// `.git` directory and re-initializing it as an empty bare repo.
+/// The workspace ID stays the same, but all task/step commits are gone.
+/// Cline will recreate checkpoints when the next task runs.
+///
+/// **Safety:**
+/// - Cannot nuke if `.git_disabled` (Cline is actively running a task)
+/// - Returns the number of deleted commits and tasks
+///
+/// **This operation cannot be undone.**
+#[utoipa::path(
+    post,
+    path = "/changes/workspaces/{id}/nuke",
+    params(
+        ("id" = String, Path, description = "Workspace ID to nuke")
+    ),
+    responses(
+        (status = 200, description = "Workspace nuked successfully", body = NukeWorkspaceResponse),
+        (status = 400, description = "Cannot nuke (e.g. active task)", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes"]
+)]
+pub async fn nuke_workspace_handler(
+    State(_state): State<Arc<AppState>>,
+    Path(workspace_id): Path<String>,
+) -> Result<Json<NukeWorkspaceResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing workspace ID".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    log::info!(
+        "REST API: POST /changes/workspaces/{}/nuke — nuking workspace",
+        workspace_id
+    );
+
+    // Resolve git_dir for this workspace
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    let ws_id = workspace_id.clone();
+    let gd = git_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        cleanup::nuke_workspace(&ws_id, &gd)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(response)) => {
+            log::info!(
+                "REST API: Nuked workspace {} — {} commits, {} tasks deleted",
+                workspace_id, response.deleted_commits, response.deleted_tasks
+            );
+
+            // Invalidate caches for this workspace
+            TASKS_CACHE.write().remove(&workspace_id);
+            // Remove all steps cache entries for this workspace
+            {
+                let mut steps = STEPS_CACHE.write();
+                let keys_to_remove: Vec<String> = steps
+                    .keys()
+                    .filter(|k| k.starts_with(&format!("{}:", workspace_id)))
+                    .cloned()
+                    .collect();
+                for k in keys_to_remove {
+                    steps.remove(&k);
+                }
+            }
+            // Invalidate workspaces cache to force re-discovery
+            *WORKSPACES_CACHE.write() = None;
+
+            Ok(Json(response))
+        }
+        Ok(Err(e)) => {
+            log::warn!("REST API: Nuke workspace error: {}", e);
+            Err((
+                StatusCode::BAD_REQUEST,
+                Json(ChangesErrorResponse { error: e, code: 400 }),
+            ))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to nuke workspace: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to nuke workspace: {}", e),
                     code: 500,
                 }),
             ))

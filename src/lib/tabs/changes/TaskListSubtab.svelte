@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff, fetchSubtaskDiff } from "./api";
+  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff, fetchSubtaskDiff, nukeWorkspace } from "./api";
   import { fetchTaskSubtasks } from "../history/api";
   import type { SubtasksResponse } from "../history/types";
   import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult } from "./types";
@@ -50,6 +50,13 @@
   let showTaskGitCmds = $state(false);
   let showSubtaskGitCmds = $state(false);
   let showStepGitCmds = $state(false);
+  let showDiscoveryGitCmd = $state(false);
+  let gitCmdCopyLabel = $state('📋');
+
+  // ---- Nuke state ----
+  let showNukeConfirm = $state(false);
+  let nukeLoading = $state(false);
+  let nukeError: string | null = $state(null);
 
   onMount(() => {
     loadWorkspaces(false);
@@ -255,6 +262,30 @@
     }
   }
 
+  async function confirmNuke() {
+    if (!selectedWorkspace) return;
+    nukeLoading = true;
+    nukeError = null;
+    try {
+      await nukeWorkspace(selectedWorkspace.id);
+      // After nuke: close dialog and refresh tasks (should show empty)
+      showNukeConfirm = false;
+      tasks = [];
+      expandedTaskId = null;
+      steps = [];
+      taskDiffId = null;
+      taskDiffResult = null;
+      subtaskTaskId = null;
+      subtasksData = null;
+      // Refresh tasks to confirm empty
+      await refreshTasks();
+    } catch (e: any) {
+      nukeError = e.message || String(e);
+    } finally {
+      nukeLoading = false;
+    }
+  }
+
   function formatDate(iso: string): string {
     try {
       const d = new Date(iso);
@@ -300,14 +331,99 @@
           Git dir: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{selectedWorkspace.gitDir}</code>
         </p>
       </div>
-      <button
-        onclick={refreshTasks}
-        disabled={taskLoading}
-        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        {taskLoading ? 'Loading...' : 'Refresh'}
-      </button>
+      <div class="flex items-center gap-2">
+        <button
+          onclick={() => { nukeError = null; showNukeConfirm = true; }}
+          disabled={taskLoading || !selectedWorkspace?.active}
+          class="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          title={selectedWorkspace?.active ? 'Delete all checkpoint history for this workspace' : 'Cannot nuke: Cline is actively running (.git_disabled)'}
+        >
+          🗑 Nuke
+        </button>
+        <button
+          onclick={refreshTasks}
+          disabled={taskLoading}
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {taskLoading ? 'Loading...' : 'Refresh'}
+        </button>
+      </div>
     </div>
+
+    <!-- Nuke Confirmation Dialog -->
+    {#if showNukeConfirm && selectedWorkspace}
+      <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={() => { if (!nukeLoading) { showNukeConfirm = false; nukeError = null; } }}>
+        <div class="bg-white rounded-xl shadow-2xl max-w-md w-full mx-4 p-6" onclick={(e) => e.stopPropagation()}>
+          <div class="flex items-start gap-3 mb-4">
+            <div class="flex-shrink-0 w-10 h-10 rounded-full bg-red-100 flex items-center justify-center">
+              <span class="text-xl">⚠️</span>
+            </div>
+            <div>
+              <h3 class="text-lg font-semibold text-gray-900">Nuke workspace {selectedWorkspace.id}?</h3>
+              <p class="text-sm text-gray-500 mt-1">This will delete <strong>ALL</strong> checkpoint history:</p>
+            </div>
+          </div>
+
+          <div class="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+            <ul class="text-sm text-red-800 space-y-1">
+              <li>• <strong>{tasks.length}</strong> task{tasks.length !== 1 ? 's' : ''}</li>
+              <li>• <strong>{tasks.reduce((s, t) => s + t.steps, 0)}</strong> commits</li>
+            </ul>
+            <p class="text-sm text-red-700 mt-3">
+              The workspace will be re-initialized empty.<br>
+              Cline will create new checkpoints on the next task.
+            </p>
+            <p class="text-xs font-bold text-red-900 mt-3 uppercase tracking-wide">This cannot be undone.</p>
+          </div>
+
+          {#if nukeError}
+            <div class="bg-red-50 border border-red-300 rounded-lg p-3 mb-4">
+              <p class="text-sm text-red-700 font-medium">Error: {nukeError}</p>
+            </div>
+          {/if}
+
+          <div class="flex items-center justify-end gap-3">
+            <button
+              onclick={() => { showNukeConfirm = false; nukeError = null; }}
+              disabled={nukeLoading}
+              class="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 disabled:opacity-50 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onclick={confirmNuke}
+              disabled={nukeLoading}
+              class="px-4 py-2 text-sm font-bold text-white bg-red-600 rounded-lg hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {nukeLoading ? 'Nuking...' : 'Nuke It'}
+            </button>
+          </div>
+        </div>
+      </div>
+    {/if}
+
+    <!-- Git Discovery Command Toggle -->
+    {#if selectedWorkspace}
+      <div class="flex items-center gap-2 mb-3">
+        <button
+          class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+          onclick={() => showDiscoveryGitCmd = !showDiscoveryGitCmd}
+        >
+          <span class="font-mono">{showDiscoveryGitCmd ? '▾' : '▸'}</span>
+          <span>Git Command (1)</span>
+        </button>
+        {#if showDiscoveryGitCmd}
+          <button
+            onclick={() => { navigator.clipboard.writeText(`git --git-dir "${selectedWorkspace!.gitDir}" log --all "--pretty=format:%H|%s|%aI"`); gitCmdCopyLabel = '✓'; setTimeout(() => gitCmdCopyLabel = '📋', 1500); }}
+            class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+            title="Copy git command"
+          >{gitCmdCopyLabel}</button>
+        {/if}
+      </div>
+      {#if showDiscoveryGitCmd}
+        <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 font-mono select-text whitespace-pre-wrap break-all">git --git-dir "{selectedWorkspace.gitDir}" log --all "--pretty=format:%H|%s|%aI"</pre>
+      {/if}
+    {/if}
 
     <!-- Task Loading -->
     {#if taskLoading}
@@ -437,15 +553,24 @@
                         </div>
                         <!-- Git Commands Toggle -->
                         {#if taskDiffResult.gitCommands?.length}
-                          <button
-                            class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
-                            onclick={(e) => { e.stopPropagation(); showTaskGitCmds = !showTaskGitCmds; }}
-                          >
-                            <span class="font-mono">{showTaskGitCmds ? '▾' : '▸'}</span>
-                            <span>Git Commands ({taskDiffResult.gitCommands.length})</span>
-                          </button>
+                          <div class="flex items-center gap-2 mb-2">
+                            <button
+                              class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                              onclick={(e) => { e.stopPropagation(); showTaskGitCmds = !showTaskGitCmds; }}
+                            >
+                              <span class="font-mono">{showTaskGitCmds ? '▾' : '▸'}</span>
+                              <span>Git Commands ({taskDiffResult.gitCommands.length})</span>
+                            </button>
+                            {#if showTaskGitCmds}
+                              <button
+                                onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(taskDiffResult!.gitCommands!.join('\n')); gitCmdCopyLabel = '✓'; setTimeout(() => gitCmdCopyLabel = '📋', 1500); }}
+                                class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                title="Copy git commands"
+                              >{gitCmdCopyLabel}</button>
+                            {/if}
+                          </div>
                           {#if showTaskGitCmds}
-                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{taskDiffResult.gitCommands.join('\n')}</pre>
+                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 font-mono select-text whitespace-pre-wrap break-all">{taskDiffResult.gitCommands.join('\n')}</pre>
                           {/if}
                         {/if}
                         <!-- Unified diff (shown immediately, scrollable with visible scrollbar) -->
@@ -559,15 +684,24 @@
                                       </div>
                                       <!-- Git Commands Toggle -->
                                       {#if subtaskDiffResult.gitCommands?.length}
-                                        <button
-                                          class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
-                                          onclick={(e) => { e.stopPropagation(); showSubtaskGitCmds = !showSubtaskGitCmds; }}
-                                        >
-                                          <span class="font-mono">{showSubtaskGitCmds ? '▾' : '▸'}</span>
-                                          <span>Git Commands ({subtaskDiffResult.gitCommands.length})</span>
-                                        </button>
+                                        <div class="flex items-center gap-2 mb-2">
+                                          <button
+                                            class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                                            onclick={(e) => { e.stopPropagation(); showSubtaskGitCmds = !showSubtaskGitCmds; }}
+                                          >
+                                            <span class="font-mono">{showSubtaskGitCmds ? '▾' : '▸'}</span>
+                                            <span>Git Commands ({subtaskDiffResult.gitCommands.length})</span>
+                                          </button>
+                                          {#if showSubtaskGitCmds}
+                                            <button
+                                              onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(subtaskDiffResult!.gitCommands!.join('\n')); gitCmdCopyLabel = '✓'; setTimeout(() => gitCmdCopyLabel = '📋', 1500); }}
+                                              class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                              title="Copy git commands"
+                                            >{gitCmdCopyLabel}</button>
+                                          {/if}
+                                        </div>
                                         {#if showSubtaskGitCmds}
-                                          <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{subtaskDiffResult.gitCommands.join('\n')}</pre>
+                                          <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 font-mono select-text whitespace-pre-wrap break-all">{subtaskDiffResult.gitCommands.join('\n')}</pre>
                                         {/if}
                                       {/if}
                                       {#if subtaskDiffResult.patch}
@@ -689,15 +823,24 @@
                                         </div>
                                         <!-- Git Commands Toggle -->
                                         {#if diffResult.gitCommands?.length}
-                                          <button
-                                            class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
-                                            onclick={(e) => { e.stopPropagation(); showStepGitCmds = !showStepGitCmds; }}
-                                          >
-                                            <span class="font-mono">{showStepGitCmds ? '▾' : '▸'}</span>
-                                            <span>Git Commands ({diffResult.gitCommands.length})</span>
-                                          </button>
+                                          <div class="flex items-center gap-2 mb-2">
+                                            <button
+                                              class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                                              onclick={(e) => { e.stopPropagation(); showStepGitCmds = !showStepGitCmds; }}
+                                            >
+                                              <span class="font-mono">{showStepGitCmds ? '▾' : '▸'}</span>
+                                              <span>Git Commands ({diffResult.gitCommands.length})</span>
+                                            </button>
+                                            {#if showStepGitCmds}
+                                              <button
+                                                onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(diffResult!.gitCommands!.join('\n')); gitCmdCopyLabel = '✓'; setTimeout(() => gitCmdCopyLabel = '📋', 1500); }}
+                                                class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                                title="Copy git commands"
+                                              >{gitCmdCopyLabel}</button>
+                                            {/if}
+                                          </div>
                                           {#if showStepGitCmds}
-                                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{diffResult.gitCommands.join('\n')}</pre>
+                                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 font-mono select-text whitespace-pre-wrap break-all">{diffResult.gitCommands.join('\n')}</pre>
                                           {/if}
                                         {/if}
                                         <!-- Unified diff (shown immediately) -->

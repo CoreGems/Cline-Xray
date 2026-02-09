@@ -62,6 +62,7 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/changes/tasks/:task_id/steps", get(shadow_git::list_steps_handler))
         .route("/changes/tasks/:task_id/steps/:index/diff", get(shadow_git::step_diff_handler))
         .route("/changes/tasks/:task_id/subtasks/:subtask_index/diff", get(shadow_git::subtask_diff_handler))
+        .route("/changes/workspaces/:id/nuke", post(shadow_git::nuke_workspace_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Latest composite route (protected)

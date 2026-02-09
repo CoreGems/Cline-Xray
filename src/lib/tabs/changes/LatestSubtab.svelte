@@ -18,6 +18,7 @@
 
   let copyLabel = $state('📋 Copy Diff');
   let showGitCmds = $state(false);
+  let gitCmdCopyLabel = $state('📋');
 
   onMount(() => {
     loadLatest();
@@ -484,15 +485,24 @@
 
           <!-- Git Commands Toggle -->
           {#if activeDiff.gitCommands?.length}
-            <button
-              class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
-              onclick={() => showGitCmds = !showGitCmds}
-            >
-              <span class="font-mono">{showGitCmds ? '▾' : '▸'}</span>
-              <span>Git Commands ({activeDiff.gitCommands.length})</span>
-            </button>
+            <div class="flex items-center gap-2">
+              <button
+                class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+                onclick={() => showGitCmds = !showGitCmds}
+              >
+                <span class="font-mono">{showGitCmds ? '▾' : '▸'}</span>
+                <span>Git Commands ({activeDiff.gitCommands.length})</span>
+              </button>
+              {#if showGitCmds}
+                <button
+                  onclick={() => { navigator.clipboard.writeText(activeDiff!.gitCommands!.join('\n')); gitCmdCopyLabel = '✓'; setTimeout(() => gitCmdCopyLabel = '📋', 1500); }}
+                  class="text-[10px] px-1.5 py-0.5 rounded bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                  title="Copy git commands"
+                >{gitCmdCopyLabel}</button>
+              {/if}
+            </div>
             {#if showGitCmds}
-              <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded overflow-x-auto font-mono select-text">{activeDiff.gitCommands.join('\n')}</pre>
+              <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded font-mono select-text whitespace-pre-wrap break-all">{activeDiff.gitCommands.join('\n')}</pre>
             {/if}
           {/if}
 

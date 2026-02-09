@@ -1,7 +1,7 @@
 // Changes Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse } from "./types";
+import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse, NukeWorkspaceResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -195,6 +195,34 @@ export async function fetchLatest(
       'Authorization': `Bearer ${apiInfo.token}`
     }
   });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Nuke a workspace's checkpoint history
+ * POST /changes/workspaces/:id/nuke
+ * Deletes ALL checkpoint history and re-initializes as empty bare repo.
+ * @param workspaceId - the workspace ID to nuke
+ */
+export async function nukeWorkspace(workspaceId: string): Promise<NukeWorkspaceResponse> {
+  const apiInfo = await getApiInfo();
+
+  const response = await fetch(
+    `${apiInfo.base_url}/changes/workspaces/${workspaceId}/nuke`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiInfo.token}`
+      }
+    }
+  );
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));

@@ -158,6 +158,20 @@ export interface LatestResponse {
   subtasks: SubtaskSummaryItem[];
 }
 
+/** Response from POST /changes/workspaces/:id/nuke */
+export interface NukeWorkspaceResponse {
+  /** Workspace ID that was nuked */
+  workspaceId: string;
+  /** Number of commits that were deleted */
+  deletedCommits: number;
+  /** Number of tasks that were deleted */
+  deletedTasks: number;
+  /** The git command used to re-initialize the repo */
+  gitCommand: string;
+  /** Whether the operation was successful */
+  success: boolean;
+}
+
 /** Available subtabs in the Changes tab */
 export type ChangesSubTab = 'Tasks' | 'Diff' | 'Latest' | 'Export';
 

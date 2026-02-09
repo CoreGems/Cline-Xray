@@ -31,6 +31,7 @@ use utoipa::{Modify, OpenApi};
         crate::shadow_git::handlers::list_steps_handler,        // GET /changes/tasks/:taskId/steps
         crate::shadow_git::handlers::step_diff_handler,         // GET /changes/tasks/:taskId/steps/:index/diff
         crate::shadow_git::handlers::subtask_diff_handler,      // GET /changes/tasks/:taskId/subtasks/:subtaskIndex/diff
+        crate::shadow_git::handlers::nuke_workspace_handler,    // POST /changes/workspaces/:id/nuke
         // Conversation History
         crate::conversation_history::handlers::list_history_tasks_handler, // GET /history/tasks
         crate::conversation_history::handlers::get_task_detail_handler,    // GET /history/tasks/:taskId
@@ -75,6 +76,7 @@ use utoipa::{Modify, OpenApi};
             crate::shadow_git::DiffFile,
             crate::shadow_git::DiffResult,
             crate::shadow_git::handlers::ChangesErrorResponse,
+            crate::shadow_git::cleanup::NukeWorkspaceResponse,
             // Conversation History schemas
             crate::conversation_history::TaskHistorySummary,
             crate::conversation_history::TaskHistoryListResponse,
