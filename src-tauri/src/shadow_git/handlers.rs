@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use crate::state::AppState;
 use super::{cache, cleanup, discovery};
-use super::types::{DiffResult, StepsResponse, TasksResponse, WorkspacesResponse};
+use super::types::{DiffResult, FileContentsRequest, FileContentsResponse, StepsResponse, TasksResponse, WorkspacesResponse};
 use super::cleanup::NukeWorkspaceResponse;
 
 // ============ In-memory caches ============
@@ -857,6 +857,108 @@ pub async fn nuke_workspace_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ChangesErrorResponse {
                     error: format!("Failed to nuke workspace: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Get file contents from a checkpoint workspace at a specific git ref
+///
+/// Reads the contents of specified files from the shadow git repo using
+/// `git show <ref>:<path>`. This is used to provide actual file bodies
+/// (not just diffs) as context for LLM chat sessions.
+///
+/// For each requested path, returns the file content at the given git ref.
+/// Files that don't exist at that ref (e.g., deleted files) will have
+/// `content: null` and an error message.
+#[utoipa::path(
+    post,
+    path = "/changes/file-contents",
+    request_body = FileContentsRequest,
+    responses(
+        (status = 200, description = "File contents retrieved", body = FileContentsResponse),
+        (status = 400, description = "Invalid parameters", body = ChangesErrorResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes"]
+)]
+pub async fn file_contents_handler(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<FileContentsRequest>,
+) -> Result<Json<FileContentsResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let workspace_id = body.workspace.clone();
+    let git_ref = body.git_ref.clone();
+    let paths = body.paths.clone();
+
+    if workspace_id.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'workspace' field".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    if git_ref.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ChangesErrorResponse {
+                error: "Missing required 'gitRef' field".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    if paths.is_empty() {
+        return Ok(Json(FileContentsResponse {
+            files: Vec::new(),
+            retrieved: 0,
+            failed: 0,
+            total_size: 0,
+        }));
+    }
+
+    log::info!(
+        "REST API: POST /changes/file-contents — workspace={}, ref={}, {} paths",
+        workspace_id, &git_ref[..std::cmp::min(8, git_ref.len())], paths.len()
+    );
+
+    let git_dir = resolve_git_dir(&workspace_id).await?;
+
+    let result = tokio::task::spawn_blocking(move || {
+        let git_path = std::path::PathBuf::from(&git_dir);
+        discovery::get_file_contents(&git_path, &git_ref, &paths)
+    })
+    .await;
+
+    match result {
+        Ok(files) => {
+            let retrieved = files.iter().filter(|f| f.content.is_some()).count();
+            let failed = files.iter().filter(|f| f.content.is_none()).count();
+            let total_size: usize = files.iter().filter_map(|f| f.size).sum();
+
+            log::info!(
+                "REST API: File contents — {} retrieved, {} failed, {} bytes total",
+                retrieved, failed, total_size
+            );
+
+            Ok(Json(FileContentsResponse {
+                files,
+                retrieved,
+                failed,
+                total_size,
+            }))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to get file contents: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to get file contents: {}", e),
                     code: 500,
                 }),
             ))

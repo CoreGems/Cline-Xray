@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchLatest, fetchSubtaskDiff } from "./api";
+  import { fetchLatest, fetchSubtaskDiff, fetchFileContents } from "./api";
   import { navigationStore } from "../../stores/navigationStore.svelte";
-  import type { LatestResponse, DiffResult, SubtaskSummaryItem } from "./types";
+  import type { LatestResponse, DiffResult, DiffFile, SubtaskSummaryItem } from "./types";
   import type { ChatAttachment } from "../agent/types";
 
   // ---- State ----
@@ -19,6 +19,7 @@
   let copyLabel = $state('📋 Copy Diff');
   let showGitCmds = $state(false);
   let gitCmdCopyLabel = $state('📋');
+  let askLlmLoading = $state(false);
 
   onMount(() => {
     loadLatest();
@@ -167,68 +168,198 @@
     return s.isInitialTask ? '🎯 Initial' : `💬 #${s.subtaskIndex}`;
   }
 
+  // ============== Diff Parsing Helpers ==============
+
+  /**
+   * Parse a unified diff patch into per-file sections.
+   * Returns a formatted string with each file's path, status, and its diff body.
+   */
+  function extractPerFileDiffs(patch: string, files: DiffFile[]): string {
+    // Split patch on "diff --git" boundaries
+    const fileSections: string[] = [];
+    const diffRegex = /^diff --git /m;
+    const parts = patch.split(diffRegex);
+
+    // Build a lookup: normalized path -> DiffFile for status info
+    const fileMap = new Map<string, DiffFile>();
+    for (const f of files) {
+      fileMap.set(f.path, f);
+    }
+
+    for (const part of parts) {
+      if (!part.trim()) continue;
+
+      // Reconstruct the full section with the "diff --git" prefix
+      const section = 'diff --git ' + part;
+
+      // Extract file path from the first line: "diff --git a/path b/path"
+      const headerMatch = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+      const filePath = headerMatch ? headerMatch[2] : '(unknown)';
+
+      // Find file metadata
+      const fileMeta = fileMap.get(filePath);
+      const status = fileMeta ? fileMeta.status.toUpperCase() : 'MODIFIED';
+      const added = fileMeta ? fileMeta.linesAdded : 0;
+      const removed = fileMeta ? fileMeta.linesRemoved : 0;
+
+      fileSections.push(
+        `${'='.repeat(60)}\n` +
+        `FILE: ${filePath}\n` +
+        `STATUS: ${status}  (+${added} -${removed})\n` +
+        `${'='.repeat(60)}\n` +
+        section.trimEnd()
+      );
+    }
+
+    if (fileSections.length === 0) {
+      // Fallback: couldn't parse, return the raw patch
+      return patch;
+    }
+
+    return fileSections.join('\n\n');
+  }
+
   // ============== Ask LLM ==============
 
-  function askLlm() {
+  async function askLlm() {
     if (!data) return;
 
-    const atts: ChatAttachment[] = [];
+    askLlmLoading = true;
+    try {
+      const atts: ChatAttachment[] = [];
 
-    // 1. All prompts
-    if (data.subtasks && data.subtasks.length > 0) {
-      const allPrompts = data.subtasks.map(s =>
-        `${s.isInitialTask ? '🎯 Initial Task' : `💬 Feedback #${s.subtaskIndex}`} (${formatDate(s.timestamp)}):\n${s.prompt}`
-      ).join('\n\n---\n\n');
-      atts.push({
-        id: `prompts-${Date.now()}`,
-        label: `All Prompts (${data.subtasks.length})`,
-        type: 'prompts',
-        content: allPrompts,
-        meta: { count: data.subtasks.length }
+      // 1. All prompts
+      if (data.subtasks && data.subtasks.length > 0) {
+        const allPrompts = data.subtasks.map(s =>
+          `${s.isInitialTask ? '🎯 Initial Task' : `💬 Feedback #${s.subtaskIndex}`} (${formatDate(s.timestamp)}):\n${s.prompt}`
+        ).join('\n\n---\n\n');
+        atts.push({
+          id: `prompts-${Date.now()}`,
+          label: `All Prompts (${data.subtasks.length})`,
+          type: 'prompts',
+          content: allPrompts,
+          meta: { count: data.subtasks.length }
+        });
+      } else if (data.prompt) {
+        atts.push({
+          id: `prompt-${Date.now()}`,
+          label: 'Task Prompt',
+          type: 'prompts',
+          content: data.prompt
+        });
+      }
+
+      // 2. Actual file contents fetched from shadow git
+      const diff = data.diff;
+      if (diff && diff.files.length > 0 && data.workspaceId) {
+        // Separate non-deleted files (fetch at toRef) and deleted files (note only)
+        const nonDeletedPaths = diff.files
+          .filter(f => f.status !== 'deleted')
+          .map(f => f.path);
+        const deletedFiles = diff.files.filter(f => f.status === 'deleted');
+
+        let fileBodySections: string[] = [];
+
+        // Fetch actual file bodies from shadow git at toRef (latest state)
+        if (nonDeletedPaths.length > 0) {
+          try {
+            console.log(`[askLlm] Fetching ${nonDeletedPaths.length} file bodies from shadow git (ref=${diff.toRef.substring(0, 8)})...`);
+            const fileContentsResp = await fetchFileContents(data.workspaceId, diff.toRef, nonDeletedPaths);
+
+            // Build file metadata lookup
+            const fileMeta = new Map(diff.files.map(f => [f.path, f]));
+
+            for (const fc of fileContentsResp.files) {
+              const meta = fileMeta.get(fc.path);
+              const status = meta ? meta.status.toUpperCase() : 'MODIFIED';
+              const added = meta ? meta.linesAdded : 0;
+              const removed = meta ? meta.linesRemoved : 0;
+
+              if (fc.content !== null) {
+                fileBodySections.push(
+                  `${'='.repeat(60)}\n` +
+                  `FILE: ${fc.path}\n` +
+                  `STATUS: ${status}  (+${added} -${removed})  SIZE: ${fc.size ?? fc.content.length} bytes\n` +
+                  `${'='.repeat(60)}\n` +
+                  fc.content
+                );
+              } else {
+                fileBodySections.push(
+                  `${'='.repeat(60)}\n` +
+                  `FILE: ${fc.path}\n` +
+                  `STATUS: ${status}  [content unavailable: ${fc.error || 'unknown error'}]\n` +
+                  `${'='.repeat(60)}`
+                );
+              }
+            }
+
+            console.log(`[askLlm] Retrieved ${fileContentsResp.retrieved}/${nonDeletedPaths.length} files (${(fileContentsResp.totalSize / 1024).toFixed(1)}KB)`);
+          } catch (e: any) {
+            console.warn('[askLlm] Failed to fetch file contents, falling back to diff sections:', e.message);
+            // Fallback: use per-file diff sections from patch
+            if (diff.patch) {
+              const perFileContent = extractPerFileDiffs(diff.patch, diff.files);
+              fileBodySections = [perFileContent];
+            }
+          }
+        }
+
+        // Note deleted files
+        for (const df of deletedFiles) {
+          fileBodySections.push(
+            `${'='.repeat(60)}\n` +
+            `FILE: ${df.path}\n` +
+            `STATUS: DELETED  (-${df.linesRemoved} lines)\n` +
+            `${'='.repeat(60)}\n` +
+            `[File was deleted in this task]`
+          );
+        }
+
+        if (fileBodySections.length > 0) {
+          const fullContent = fileBodySections.join('\n\n');
+          atts.push({
+            id: `files-${Date.now()}`,
+            label: `File Contents (${diff.files.length} files, ${(fullContent.length / 1024).toFixed(1)}KB)`,
+            type: 'files',
+            content: fullContent,
+            meta: { count: diff.files.length, sizeKB: Math.round(fullContent.length / 1024) }
+          });
+        }
+      } else if (diff && diff.files.length > 0 && diff.patch) {
+        // Fallback: no workspace ID, use per-file diff sections
+        const perFileContent = extractPerFileDiffs(diff.patch, diff.files);
+        const totalSize = perFileContent.length;
+        atts.push({
+          id: `files-${Date.now()}`,
+          label: `Changed Files (${diff.files.length}, ${(totalSize / 1024).toFixed(1)}KB)`,
+          type: 'files',
+          content: perFileContent,
+          meta: { count: diff.files.length, sizeKB: Math.round(totalSize / 1024) }
+        });
+      }
+
+      // 3. Unified diff patch
+      if (diff && diff.patch) {
+        atts.push({
+          id: `diff-${Date.now()}`,
+          label: `Unified Diff (${(diff.patch.length / 1024).toFixed(1)}KB)`,
+          type: 'diff',
+          content: diff.patch,
+          meta: { sizeKB: Math.round(diff.patch.length / 1024) }
+        });
+      }
+
+      console.log('[askLlm] data.diff:', data.diff ? `${data.diff.files.length} files, ${data.diff.patch?.length ?? 0} bytes patch` : 'NULL (no checkpoint)');
+      console.log('[askLlm] attachments to send:', atts.length, atts.map(a => a.label));
+
+      // Navigate to Agent → Chat with payload
+      navigationStore.navigateToChat({
+        attachments: atts,
+        timestamp: Date.now()
       });
-    } else if (data.prompt) {
-      atts.push({
-        id: `prompt-${Date.now()}`,
-        label: 'Task Prompt',
-        type: 'prompts',
-        content: data.prompt
-      });
+    } finally {
+      askLlmLoading = false;
     }
-
-    // 2. File list
-    const diff = data.diff;
-    if (diff && diff.files.length > 0) {
-      const fileList = diff.files.map(f =>
-        `${f.status.toUpperCase().padEnd(10)} ${f.path}  (+${f.linesAdded} -${f.linesRemoved})`
-      ).join('\n');
-      atts.push({
-        id: `files-${Date.now()}`,
-        label: `Changed Files (${diff.files.length})`,
-        type: 'files',
-        content: fileList,
-        meta: { count: diff.files.length }
-      });
-    }
-
-    // 3. Unified diff patch
-    if (diff && diff.patch) {
-      atts.push({
-        id: `diff-${Date.now()}`,
-        label: `Unified Diff (${(diff.patch.length / 1024).toFixed(1)}KB)`,
-        type: 'diff',
-        content: diff.patch,
-        meta: { sizeKB: Math.round(diff.patch.length / 1024) }
-      });
-    }
-
-    console.log('[askLlm] data.diff:', data.diff ? `${data.diff.files.length} files, ${data.diff.patch?.length ?? 0} bytes patch` : 'NULL (no checkpoint)');
-    console.log('[askLlm] attachments to send:', atts.length, atts.map(a => a.label));
-
-    // Navigate to Agent → Chat with payload
-    navigationStore.navigateToChat({
-      attachments: atts,
-      timestamp: Date.now()
-    });
   }
 </script>
 
@@ -246,11 +377,11 @@
     <div class="flex items-center gap-2">
       <button
         onclick={askLlm}
-        disabled={loading || !data}
+        disabled={loading || !data || askLlmLoading}
         class="px-4 py-1.5 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        title="Send task artifacts to Agent Chat"
+        title="Send task artifacts (with full file contents) to Agent Chat"
       >
-        🤖 Ask LLM
+        {askLlmLoading ? '⏳ Loading files...' : '🤖 Ask LLM'}
       </button>
       <button
         onclick={loadLatest}

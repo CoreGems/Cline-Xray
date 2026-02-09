@@ -51,7 +51,7 @@ pub fn init_logging() {
 
     // Log startup information
     log::info!("========================================");
-    log::info!("Jira Viewer - Session Started");
+    log::info!("Cline X-Ray - Session Started");
     log::info!("========================================");
     log::info!("Log level: {:?}", level);
     log::info!("Log file: {:?}", log_path);

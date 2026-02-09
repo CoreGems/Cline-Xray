@@ -871,6 +871,59 @@ pub fn find_workspace_for_task(task_id: &str) -> Option<(String, PathBuf)> {
     None
 }
 
+/// Get file contents at a specific git ref using `git show <ref>:<path>`.
+///
+/// For each path, runs `git --git-dir <git_dir> show <ref>:<path>` and
+/// returns the file content. Deleted files (not present at `ref`) will
+/// have `content: None` and an error message.
+///
+/// Binary files may return garbled content — callers should skip them.
+pub fn get_file_contents(
+    git_dir: &PathBuf,
+    git_ref: &str,
+    paths: &[String],
+) -> Vec<super::types::FileContent> {
+    let git_dir_str = git_dir.to_string_lossy().to_string();
+
+    paths.iter().map(|path| {
+        let ref_path = format!("{}:{}", git_ref, path);
+        let output = Command::new("git")
+            .args(["--git-dir", &git_dir_str, "show", &ref_path])
+            .output();
+
+        match output {
+            Ok(out) if out.status.success() => {
+                let content = String::from_utf8_lossy(&out.stdout).to_string();
+                let size = content.len();
+                super::types::FileContent {
+                    path: path.clone(),
+                    content: Some(content),
+                    error: None,
+                    size: Some(size),
+                }
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                log::debug!("git show {} failed for {}: {}", ref_path, path, stderr.trim());
+                super::types::FileContent {
+                    path: path.clone(),
+                    content: None,
+                    error: Some(stderr.trim().to_string()),
+                    size: None,
+                }
+            }
+            Err(e) => {
+                super::types::FileContent {
+                    path: path.clone(),
+                    content: None,
+                    error: Some(format!("Failed to execute git: {}", e)),
+                    size: None,
+                }
+            }
+        }
+    }).collect()
+}
+
 /// Parse git --numstat output into DiffFile vec.
 /// Format: <added>\t<removed>\t<path>
 fn parse_numstat(output: &str) -> Vec<super::types::DiffFile> {

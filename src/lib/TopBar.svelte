@@ -14,7 +14,7 @@
 <div class="flex items-center gap-3 px-4 py-2 bg-white border-b border-gray-200 shadow-sm">
   <!-- App Title -->
   <div class="flex items-center gap-4">
-    <h1 class="text-lg font-semibold text-gray-800">Jira Viewer</h1>
+    <h1 class="text-lg font-semibold text-gray-800">Cline X-Ray</h1>
     
     <!-- Tab Navigation -->
     <nav class="flex items-center gap-1 ml-4">

@@ -1,7 +1,7 @@
 // Changes Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse, NukeWorkspaceResponse } from "./types";
+import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse, NukeWorkspaceResponse, FileContentsResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -221,6 +221,41 @@ export async function nukeWorkspace(workspaceId: string): Promise<NukeWorkspaceR
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiInfo.token}`
       }
+    }
+  );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch file contents from a checkpoint workspace at a specific git ref
+ * POST /changes/file-contents
+ * Uses `git show <ref>:<path>` to retrieve actual file bodies from the shadow git repo.
+ * @param workspace - the workspace ID
+ * @param gitRef - git ref to read files from (e.g. a commit hash from diff.toRef)
+ * @param paths - list of file paths to retrieve
+ */
+export async function fetchFileContents(
+  workspace: string,
+  gitRef: string,
+  paths: string[]
+): Promise<FileContentsResponse> {
+  const apiInfo = await getApiInfo();
+
+  const response = await fetch(
+    `${apiInfo.base_url}/changes/file-contents`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiInfo.token}`
+      },
+      body: JSON.stringify({ workspace, gitRef, paths })
     }
   );
 

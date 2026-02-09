@@ -172,6 +172,30 @@ export interface NukeWorkspaceResponse {
   success: boolean;
 }
 
+/** A file with its content retrieved from shadow git */
+export interface FileContentItem {
+  /** File path relative to repo root */
+  path: string;
+  /** File content (null if not available at given ref) */
+  content: string | null;
+  /** Error message if retrieval failed */
+  error: string | null;
+  /** Size in bytes */
+  size: number | null;
+}
+
+/** Response from POST /changes/file-contents */
+export interface FileContentsResponse {
+  /** Files with their contents */
+  files: FileContentItem[];
+  /** Number of files successfully retrieved */
+  retrieved: number;
+  /** Number of files that failed */
+  failed: number;
+  /** Total content size in bytes */
+  totalSize: number;
+}
+
 /** Available subtabs in the Changes tab */
 export type ChangesSubTab = 'Tasks' | 'Diff' | 'Latest' | 'Export';
 

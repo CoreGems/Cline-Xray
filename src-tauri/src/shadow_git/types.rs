@@ -109,3 +109,43 @@ pub struct DiffResult {
     /// The actual git commands that were executed to produce this diff
     pub git_commands: Vec<String>,
 }
+
+/// Content of a single file retrieved from the shadow git repo
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContent {
+    /// File path relative to repo root
+    pub path: String,
+    /// File content (None if the file doesn't exist at the given ref)
+    pub content: Option<String>,
+    /// Error message if retrieval failed
+    pub error: Option<String>,
+    /// Size in bytes (of content, if available)
+    pub size: Option<usize>,
+}
+
+/// Request body for POST /changes/file-contents
+#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContentsRequest {
+    /// Workspace ID (required to locate the git repo)
+    pub workspace: String,
+    /// Git ref to read files from (e.g. a commit hash)
+    pub git_ref: String,
+    /// List of file paths to retrieve
+    pub paths: Vec<String>,
+}
+
+/// Response for POST /changes/file-contents
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct FileContentsResponse {
+    /// Files with their contents
+    pub files: Vec<FileContent>,
+    /// Number of files successfully retrieved
+    pub retrieved: usize,
+    /// Number of files that failed
+    pub failed: usize,
+    /// Total content size in bytes
+    pub total_size: usize,
+}

@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Jira Viewer",
+  "productName": "Cline X-Ray",
   "version": "0.1.0",
   "identifier": "com.jira.viewer",
   "build": {
@@ -13,7 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "Jira Viewer",
+        "title": "Cline X-Ray",
         "width": 1200,
         "height": 800,
         "resizable": true,

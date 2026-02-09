@@ -12,5 +12,5 @@ pub mod cleanup;
 pub mod handlers;
 
 pub use types::*;
-pub use discovery::{list_tasks_for_workspace, list_steps_for_task, get_task_diff, get_subtask_diff, find_workspace_for_task};
+pub use discovery::{list_tasks_for_workspace, list_steps_for_task, get_task_diff, get_subtask_diff, find_workspace_for_task, get_file_contents};
 pub use handlers::*;
