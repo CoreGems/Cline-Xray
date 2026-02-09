@@ -4,6 +4,9 @@
 
 > _Turn opaque agent runs into verifiable execution timelines._
 
+> [!NOTE]
+> **Cline X-Ray is a native desktop application** (built with Tauri) designed to run **side-by-side with VS Code + Cline**. It reads Cline's on-disk artifacts in real time — shadow-Git repos, conversation histories, and tool logs — which only exist on a developer's local machine. **There is no live web preview** because the app requires direct filesystem access to the same machine where Cline is running.
+
 Cline X-Ray reads the artifacts that AI coding agents already produce — shadow-Git repositories, conversation histories, tool-call logs, and task metadata — and reconstructs them into a navigable execution history that Gemini 3 can reason over directly.
 
 [![Built with Tauri](https://img.shields.io/badge/Tauri-2.x-blue?logo=tauri)](https://tauri.app)
