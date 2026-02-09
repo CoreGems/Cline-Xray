@@ -106,4 +106,6 @@ pub struct DiffResult {
     pub from_ref: String,
     /// The "to" commit reference
     pub to_ref: String,
+    /// The actual git commands that were executed to produce this diff
+    pub git_commands: Vec<String>,
 }

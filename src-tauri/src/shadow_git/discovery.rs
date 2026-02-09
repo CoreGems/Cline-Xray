@@ -348,14 +348,18 @@ pub fn get_step_diff(
     };
 
     let git_dir_str = git_dir.to_string_lossy().to_string();
+    let mut git_commands: Vec<String> = Vec::new();
 
     // Get --numstat for file-level stats
+    let numstat_args = [
+        "--git-dir", &git_dir_str,
+        "diff", "--numstat",
+        &from_ref, &to_ref,
+    ];
+    git_commands.push(format!("git {}", numstat_args.join(" ")));
+
     let numstat_output = Command::new("git")
-        .args([
-            "--git-dir", &git_dir_str,
-            "diff", "--numstat",
-            &from_ref, &to_ref,
-        ])
+        .args(&numstat_args)
         .output()
         .map_err(|e| format!("Failed to run git diff --numstat: {}", e))?;
 
@@ -363,22 +367,27 @@ pub fn get_step_diff(
         parse_numstat(&String::from_utf8_lossy(&numstat_output.stdout))
     } else {
         // Might be root commit — try diff-tree
+        let dt_args = [
+            "--git-dir", &git_dir_str,
+            "diff-tree", "--numstat", "--no-commit-id", "-r", &to_ref,
+        ];
+        git_commands.push(format!("git {} (fallback)", dt_args.join(" ")));
         let dt_out = Command::new("git")
-            .args([
-                "--git-dir", &git_dir_str,
-                "diff-tree", "--numstat", "--no-commit-id", "-r", &to_ref,
-            ])
+            .args(&dt_args)
             .output()
             .map_err(|e| format!("Failed to run git diff-tree: {}", e))?;
         parse_numstat(&String::from_utf8_lossy(&dt_out.stdout))
     };
 
     // Get unified diff patch text
+    let patch_args = [
+        "--git-dir", &git_dir_str,
+        "diff", &from_ref, &to_ref,
+    ];
+    git_commands.push(format!("git {}", patch_args.join(" ")));
+
     let patch_output = Command::new("git")
-        .args([
-            "--git-dir", &git_dir_str,
-            "diff", &from_ref, &to_ref,
-        ])
+        .args(&patch_args)
         .output()
         .map_err(|e| format!("Failed to run git diff: {}", e))?;
 
@@ -386,11 +395,13 @@ pub fn get_step_diff(
         String::from_utf8_lossy(&patch_output.stdout).to_string()
     } else {
         // Try diff-tree for root commits
+        let dt_patch_args = [
+            "--git-dir", &git_dir_str,
+            "diff-tree", "-p", "--no-commit-id", "-r", &to_ref,
+        ];
+        git_commands.push(format!("git {} (fallback)", dt_patch_args.join(" ")));
         let dt_out = Command::new("git")
-            .args([
-                "--git-dir", &git_dir_str,
-                "diff-tree", "-p", "--no-commit-id", "-r", &to_ref,
-            ])
+            .args(&dt_patch_args)
             .output()
             .unwrap_or(patch_output);
         String::from_utf8_lossy(&dt_out.stdout).to_string()
@@ -406,6 +417,7 @@ pub fn get_step_diff(
         patch,
         from_ref,
         to_ref,
+        git_commands,
     })
 }
 
@@ -446,6 +458,7 @@ pub fn get_task_diff(
     let to_ref = last_hash.clone();
 
     let git_dir_str = git_dir.to_string_lossy().to_string();
+    let mut git_commands: Vec<String> = Vec::new();
 
     log::debug!(
         "Task diff: git --git-dir {} diff --numstat {}  {} (excludes={:?})",
@@ -466,6 +479,8 @@ pub fn get_task_diff(
             numstat_args.push(format!(":(exclude){}", ex));
         }
     }
+
+    git_commands.push(format!("git {}", numstat_args.join(" ")));
 
     let numstat_output = Command::new("git")
         .args(&numstat_args)
@@ -503,6 +518,7 @@ pub fn get_task_diff(
                 fallback_args.push(format!(":(exclude){}", ex));
             }
         }
+        git_commands.push(format!("git {} (fallback)", fallback_args.join(" ")));
         let dt_out = Command::new("git")
             .args(&fallback_args)
             .output()
@@ -563,6 +579,7 @@ pub fn get_task_diff(
         patch,
         from_ref,
         to_ref,
+        git_commands,
     })
 }
 
@@ -700,6 +717,7 @@ pub fn get_subtask_diff(
     };
 
     let git_dir_str = git_dir.to_string_lossy().to_string();
+    let mut git_commands: Vec<String> = Vec::new();
 
     log::debug!(
         "Subtask diff: git --git-dir {} diff --numstat {} {} (subtask #{}, excludes={:?})",
@@ -720,6 +738,8 @@ pub fn get_subtask_diff(
             numstat_args.push(format!(":(exclude){}", ex));
         }
     }
+
+    git_commands.push(format!("git {}", numstat_args.join(" ")));
 
     let numstat_output = Command::new("git")
         .args(&numstat_args)
@@ -782,6 +802,8 @@ pub fn get_subtask_diff(
         }
     }
 
+    git_commands.push(format!("git {}", patch_args.join(" ")));
+
     let patch_output = Command::new("git")
         .args(&patch_args)
         .output()
@@ -819,6 +841,7 @@ pub fn get_subtask_diff(
         patch,
         from_ref,
         to_ref,
+        git_commands,
     })
 }
 

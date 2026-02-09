@@ -14,24 +14,28 @@ export async function getApiInfo(): Promise<ApiInfo> {
  * Send a chat message to Gemini via the backend API
  * @param message - The user's message
  * @param history - Previous conversation history
+ * @param model - Optional model to use (e.g. "gemini-2.0-flash")
  * @returns The chat response with AI reply and updated history
  */
 export async function sendChatMessage(
   message: string,
-  history: ChatMessage[]
+  history: ChatMessage[],
+  model?: string
 ): Promise<ChatResponse> {
   const apiInfo = await getApiInfo();
   
+  const body: Record<string, unknown> = { message, history };
+  if (model) {
+    body.model = model;
+  }
+
   const response = await fetch(`${apiInfo.base_url}/agent/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiInfo.token}`
     },
-    body: JSON.stringify({
-      message,
-      history
-    })
+    body: JSON.stringify(body)
   });
 
   if (!response.ok) {

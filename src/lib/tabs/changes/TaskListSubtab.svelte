@@ -47,6 +47,9 @@
   let subtaskDiffError: string | null = $state(null);
   let subtaskDiffResult: DiffResult | null = $state(null);
   let subtaskDiffCopyLabel = $state('📋 Copy');
+  let showTaskGitCmds = $state(false);
+  let showSubtaskGitCmds = $state(false);
+  let showStepGitCmds = $state(false);
 
   onMount(() => {
     loadWorkspaces(false);
@@ -432,6 +435,19 @@
                             >✕</button>
                           </div>
                         </div>
+                        <!-- Git Commands Toggle -->
+                        {#if taskDiffResult.gitCommands?.length}
+                          <button
+                            class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
+                            onclick={(e) => { e.stopPropagation(); showTaskGitCmds = !showTaskGitCmds; }}
+                          >
+                            <span class="font-mono">{showTaskGitCmds ? '▾' : '▸'}</span>
+                            <span>Git Commands ({taskDiffResult.gitCommands.length})</span>
+                          </button>
+                          {#if showTaskGitCmds}
+                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{taskDiffResult.gitCommands.join('\n')}</pre>
+                          {/if}
+                        {/if}
                         <!-- Unified diff (shown immediately, scrollable with visible scrollbar) -->
                         {#if taskDiffResult.patch}
                           <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; width: 100%; box-sizing: border-box;">{taskDiffResult.patch}</pre>
@@ -541,6 +557,19 @@
                                           </button>
                                         {/if}
                                       </div>
+                                      <!-- Git Commands Toggle -->
+                                      {#if subtaskDiffResult.gitCommands?.length}
+                                        <button
+                                          class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
+                                          onclick={(e) => { e.stopPropagation(); showSubtaskGitCmds = !showSubtaskGitCmds; }}
+                                        >
+                                          <span class="font-mono">{showSubtaskGitCmds ? '▾' : '▸'}</span>
+                                          <span>Git Commands ({subtaskDiffResult.gitCommands.length})</span>
+                                        </button>
+                                        {#if showSubtaskGitCmds}
+                                          <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{subtaskDiffResult.gitCommands.join('\n')}</pre>
+                                        {/if}
+                                      {/if}
                                       {#if subtaskDiffResult.patch}
                                         <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; max-height: 384px !important; width: 100%; box-sizing: border-box;">{subtaskDiffResult.patch}</pre>
                                       {:else}
@@ -658,6 +687,19 @@
                                             </button>
                                           {/if}
                                         </div>
+                                        <!-- Git Commands Toggle -->
+                                        {#if diffResult.gitCommands?.length}
+                                          <button
+                                            class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1 mb-2"
+                                            onclick={(e) => { e.stopPropagation(); showStepGitCmds = !showStepGitCmds; }}
+                                          >
+                                            <span class="font-mono">{showStepGitCmds ? '▾' : '▸'}</span>
+                                            <span>Git Commands ({diffResult.gitCommands.length})</span>
+                                          </button>
+                                          {#if showStepGitCmds}
+                                            <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded mb-3 overflow-x-auto font-mono select-text">{diffResult.gitCommands.join('\n')}</pre>
+                                          {/if}
+                                        {/if}
                                         <!-- Unified diff (shown immediately) -->
                                         {#if diffResult.patch}
                                           <pre class="diff-scroll" style="background: #111827; color: #e5e7eb; font-size: 10px; line-height: 16px; padding: 12px; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; user-select: text; margin: 0 0 12px 0; max-height: 384px !important; width: 100%; box-sizing: border-box;">{diffResult.patch}</pre>

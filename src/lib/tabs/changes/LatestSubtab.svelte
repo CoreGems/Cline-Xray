@@ -17,6 +17,7 @@
   let subtaskDiffs: Map<number, { diff: DiffResult | null; loading: boolean; error: string | null }> = $state(new Map());
 
   let copyLabel = $state('📋 Copy Diff');
+  let showGitCmds = $state(false);
 
   onMount(() => {
     loadLatest();
@@ -480,6 +481,20 @@
               {shortHash(activeDiff.fromRef)} → {shortHash(activeDiff.toRef)}
             </span>
           </div>
+
+          <!-- Git Commands Toggle -->
+          {#if activeDiff.gitCommands?.length}
+            <button
+              class="text-xs text-gray-400 hover:text-gray-600 flex items-center gap-1"
+              onclick={() => showGitCmds = !showGitCmds}
+            >
+              <span class="font-mono">{showGitCmds ? '▾' : '▸'}</span>
+              <span>Git Commands ({activeDiff.gitCommands.length})</span>
+            </button>
+            {#if showGitCmds}
+              <pre class="text-xs bg-gray-900 text-green-400 p-3 rounded overflow-x-auto font-mono select-text">{activeDiff.gitCommands.join('\n')}</pre>
+            {/if}
+          {/if}
 
           <!-- Changed Files -->
           <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">

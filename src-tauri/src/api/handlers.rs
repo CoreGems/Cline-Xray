@@ -19,6 +19,9 @@ pub struct ChatRequest {
     /// Optional conversation history for context
     #[serde(default)]
     pub history: Vec<ChatMessage>,
+    /// Optional model to use (defaults to "gemini-2.0-flash")
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// A single chat message in the conversation
@@ -386,11 +389,11 @@ pub async fn chat_handler(
     Json(request): Json<ChatRequest>,
 ) -> Result<Json<ChatResponse>, (StatusCode, Json<ErrorResponse>)> {
     let start_time = Instant::now();
-    let model = "gemini-2.0-flash";
+    let model = request.model.as_deref().unwrap_or("gemini-2.0-flash");
     let user_message_preview: String = request.message.chars().take(100).collect();
     
-    log::info!("REST API: agent/chat called with message: {}...", 
-        &request.message.chars().take(50).collect::<String>());
+    log::info!("REST API: agent/chat called with model: {}, message: {}...", 
+        model, &request.message.chars().take(50).collect::<String>());
 
     // Check if Gemini API key is configured
     if state.gemini_api_key.is_empty() || state.gemini_api_key == "YOUR_GEMINI_API_KEY_HERE" {

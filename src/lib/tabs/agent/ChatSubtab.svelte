@@ -1,10 +1,24 @@
 <script lang="ts">
   import { untrack } from "svelte";
-  import { sendChatMessage } from "./api";
+  import { marked } from "marked";
+  import { sendChatMessage, getAgentModels } from "./api";
+
+  // Configure marked for safe, sane defaults
+  marked.setOptions({
+    breaks: true,    // Convert \n to <br>
+    gfm: true,       // GitHub-flavored markdown
+  });
+
+  /** Render markdown to HTML (synchronous) */
+  function renderMarkdown(content: string): string {
+    return marked.parse(content) as string;
+  }
   import { navigationStore } from "../../stores/navigationStore.svelte";
   import type { ChatMessage, ChatSession, ChatAttachment } from "./types";
 
   const STORAGE_KEY = 'agent-chat-sessions';
+  const MODEL_STORAGE_KEY = 'agent-chat-selected-model';
+  const DEFAULT_MODEL = 'gemini-2.0-flash';
 
   // Chat sessions state
   let sessions: ChatSession[] = $state([]);
@@ -18,6 +32,18 @@
   let isLoading = $state(false);
   let error: string | null = $state(null);
 
+  // Model selector state
+  interface ModelOption {
+    id: string;        // e.g. "gemini-2.0-flash" (without "models/" prefix)
+    displayName: string;
+    description?: string;
+  }
+  let availableModels: ModelOption[] = $state([]);
+  let selectedModel: string = $state(localStorage.getItem(MODEL_STORAGE_KEY) || DEFAULT_MODEL);
+  let modelsLoading = $state(false);
+  let modelsError: string | null = $state(null);
+  let showModelDropdown = $state(false);
+
   // Attachment state (in-memory context artifacts from "Ask LLM")
   let attachments: ChatAttachment[] = $state([]);
   let previewAttachmentId: string | null = $state(null);
@@ -27,6 +53,7 @@
     if (!initialized) {
       untrack(() => {
         loadSessions();
+        loadModels();
         initialized = true;
       });
     }
@@ -54,6 +81,58 @@
   // Generate unique ID
   function generateId(): string {
     return `chat-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  // ============== Model Helpers ==============
+
+  // Load available models from the API
+  async function loadModels() {
+    modelsLoading = true;
+    modelsError = null;
+    try {
+      const data = await getAgentModels();
+      // Filter to models that support generateContent and map to ModelOption
+      availableModels = (data.models || [])
+        .filter((m: any) => 
+          m.supportedGenerationMethods?.includes('generateContent')
+        )
+        .map((m: any) => ({
+          id: m.name.replace(/^models\//, ''),
+          displayName: m.displayName || m.name.replace(/^models\//, ''),
+          description: m.description,
+        }))
+        .sort((a: ModelOption, b: ModelOption) => a.displayName.localeCompare(b.displayName));
+      
+      // If selected model isn't in the list, fall back to default
+      if (availableModels.length > 0 && !availableModels.find(m => m.id === selectedModel)) {
+        // Try to find gemini-2.0-flash or use first available
+        const defaultMatch = availableModels.find(m => m.id === DEFAULT_MODEL);
+        selectedModel = defaultMatch ? defaultMatch.id : availableModels[0].id;
+        localStorage.setItem(MODEL_STORAGE_KEY, selectedModel);
+      }
+    } catch (e) {
+      console.error('Failed to load models:', e);
+      modelsError = e instanceof Error ? e.message : 'Failed to load models';
+      // Keep default model as fallback
+      if (availableModels.length === 0) {
+        availableModels = [{ id: DEFAULT_MODEL, displayName: 'Gemini 2.0 Flash' }];
+      }
+    } finally {
+      modelsLoading = false;
+    }
+  }
+
+  // Select a model
+  function selectModel(modelId: string) {
+    selectedModel = modelId;
+    showModelDropdown = false;
+    localStorage.setItem(MODEL_STORAGE_KEY, modelId);
+  }
+
+  // Get display name for current model
+  function currentModelDisplay(): string {
+    const model = availableModels.find(m => m.id === selectedModel);
+    return model?.displayName || selectedModel;
   }
 
   // Load sessions from localStorage
@@ -187,7 +266,7 @@
       const messageToSend = contextPrefix + userMessage;
 
       const historyToSend = messages.slice(0, -1); // Send history without the message we just added
-      const data = await sendChatMessage(messageToSend, historyToSend);
+      const data = await sendChatMessage(messageToSend, historyToSend, selectedModel);
       
       // Add AI response to chat
       messages = [...messages, { role: 'model', content: data.response }];
@@ -391,8 +470,12 @@
             <svg class="w-16 h-16 mx-auto mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>
             </svg>
+            <div class="flex items-center justify-center gap-2 mb-2">
+              <span class="text-lg font-semibold" style="color: #4285F4">G</span><span class="text-lg font-semibold" style="color: #EA4335">o</span><span class="text-lg font-semibold" style="color: #FBBC04">o</span><span class="text-lg font-semibold" style="color: #4285F4">g</span><span class="text-lg font-semibold" style="color: #34A853">l</span><span class="text-lg font-semibold" style="color: #EA4335">e</span>
+              <span class="text-lg font-semibold bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">Gemini</span>
+            </div>
             <h3 class="text-lg font-medium text-gray-700 mb-2">Chat with Gemini</h3>
-            <p class="text-sm">Start a conversation with the AI assistant.</p>
+            <p class="text-sm">Powered by Google Gemini AI</p>
             {#if !activeSessionId}
               <button 
                 onclick={createNewSession}
@@ -413,13 +496,14 @@
                 {#if message.role === 'user'}
                   <span class="text-xs font-medium text-blue-200">You</span>
                 {:else}
-                  <svg class="w-4 h-4 text-purple-500" fill="currentColor" viewBox="0 0 24 24">
-                    <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/>
-                  </svg>
-                  <span class="text-xs font-medium text-purple-600">Gemini</span>
+                  <span class="text-xs font-bold bg-gradient-to-r from-blue-500 via-purple-500 to-pink-500 bg-clip-text text-transparent">✦ Gemini</span>
                 {/if}
               </div>
-              <div class="whitespace-pre-wrap text-sm">{message.content}</div>
+              {#if message.role === 'model'}
+                <div class="markdown-body text-sm">{@html renderMarkdown(message.content)}</div>
+              {:else}
+                <div class="whitespace-pre-wrap text-sm">{message.content}</div>
+              {/if}
             </div>
           </div>
         {/each}
@@ -513,7 +597,7 @@
             bind:value={inputMessage}
             onkeydown={handleKeyDown}
             placeholder="Type your message..."
-            rows="2"
+            rows="3"
             class="w-full px-4 py-3 border border-gray-300 rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-100 disabled:cursor-not-allowed"
             disabled={isLoading}
           ></textarea>
@@ -543,9 +627,167 @@
           {/if}
         </div>
       </div>
-      <p class="mt-2 text-xs text-gray-500 text-center">
+      <!-- Model Selector + Hint Row -->
+      <div class="mt-1 flex items-center gap-2">
+        <div class="relative">
+          <button
+            onclick={() => showModelDropdown = !showModelDropdown}
+            disabled={modelsLoading}
+            class="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title={modelsError ? `Error: ${modelsError}` : `Model: ${selectedModel}`}
+          >
+            <!-- Model icon -->
+            <svg class="w-3.5 h-3.5 text-purple-500 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+            </svg>
+            {#if modelsLoading}
+              <span class="text-gray-400">Loading...</span>
+            {:else}
+              <span class="max-w-[180px] truncate">{currentModelDisplay()}</span>
+            {/if}
+            <!-- Chevron -->
+            <svg class="w-3 h-3 text-gray-400 flex-shrink-0 transition-transform {showModelDropdown ? 'rotate-180' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path>
+            </svg>
+          </button>
+
+          <!-- Dropdown menu (opens upward) -->
+          {#if showModelDropdown && availableModels.length > 0}
+            <!-- Backdrop to close dropdown -->
+            <div
+              class="fixed inset-0 z-10"
+              onclick={() => showModelDropdown = false}
+              onkeydown={(e) => e.key === 'Escape' && (showModelDropdown = false)}
+              role="button"
+              tabindex="-1"
+            ></div>
+            <div class="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-gray-200 rounded-lg shadow-lg z-20">
+              {#each availableModels as model (model.id)}
+                <button
+                  onclick={() => selectModel(model.id)}
+                  class="w-full text-left px-3 py-2 text-xs hover:bg-blue-50 transition-colors flex items-center gap-2 {selectedModel === model.id ? 'bg-blue-50 text-blue-700' : 'text-gray-700'}"
+                  title={model.description || model.id}
+                >
+                  <span class="w-4 flex-shrink-0 text-blue-500">
+                    {#if selectedModel === model.id}
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+                      </svg>
+                    {/if}
+                  </span>
+                  <div class="flex-1 min-w-0">
+                    <div class="font-medium truncate">{model.displayName}</div>
+                    <div class="text-[10px] text-gray-400 truncate">{model.id}</div>
+                  </div>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+
+        {#if modelsError}
+          <span class="text-[10px] text-amber-600" title={modelsError}>⚠</span>
+        {/if}
+
+        <!-- Refresh models button -->
+        <button
+          onclick={loadModels}
+          disabled={modelsLoading}
+          class="p-1 text-gray-400 hover:text-gray-600 rounded transition-colors disabled:opacity-50"
+          title="Refresh models list"
+        >
+          <svg class="w-3.5 h-3.5 {modelsLoading ? 'animate-spin' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+          </svg>
+        </button>
+
+        <!-- Spacer + hint -->
+        <span class="flex-1 text-xs text-gray-500 text-right">
         Press Enter to send, Shift+Enter for new line
-      </p>
+        </span>
+      </div>
     </div>
   </div>
 </div>
+
+<style>
+  :global(.markdown-body) {
+    line-height: 1.6;
+    word-wrap: break-word;
+  }
+  :global(.markdown-body h1),
+  :global(.markdown-body h2),
+  :global(.markdown-body h3),
+  :global(.markdown-body h4) {
+    margin-top: 0.75em;
+    margin-bottom: 0.35em;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  :global(.markdown-body h1) { font-size: 1.25em; }
+  :global(.markdown-body h2) { font-size: 1.15em; }
+  :global(.markdown-body h3) { font-size: 1.05em; }
+  :global(.markdown-body p) {
+    margin-top: 0.4em;
+    margin-bottom: 0.4em;
+  }
+  :global(.markdown-body ul),
+  :global(.markdown-body ol) {
+    padding-left: 1.5em;
+    margin-top: 0.3em;
+    margin-bottom: 0.3em;
+  }
+  :global(.markdown-body li) { margin-bottom: 0.15em; }
+  :global(.markdown-body ul) { list-style-type: disc; }
+  :global(.markdown-body ol) { list-style-type: decimal; }
+  :global(.markdown-body code) {
+    background-color: rgba(0, 0, 0, 0.06);
+    padding: 0.15em 0.35em;
+    border-radius: 3px;
+    font-size: 0.9em;
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+  }
+  :global(.markdown-body pre) {
+    background-color: #f6f8fa;
+    border: 1px solid #e1e4e8;
+    border-radius: 6px;
+    padding: 0.75em 1em;
+    overflow-x: auto;
+    margin: 0.5em 0;
+  }
+  :global(.markdown-body pre code) {
+    background: none;
+    padding: 0;
+    font-size: 0.85em;
+    line-height: 1.5;
+  }
+  :global(.markdown-body blockquote) {
+    border-left: 3px solid #d1d5db;
+    padding-left: 0.75em;
+    margin: 0.5em 0;
+    color: #6b7280;
+  }
+  :global(.markdown-body strong) { font-weight: 600; }
+  :global(.markdown-body a) { color: #2563eb; text-decoration: underline; }
+  :global(.markdown-body a:hover) { color: #1d4ed8; }
+  :global(.markdown-body hr) {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 0.75em 0;
+  }
+  :global(.markdown-body table) {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.5em 0;
+    font-size: 0.9em;
+  }
+  :global(.markdown-body th),
+  :global(.markdown-body td) {
+    border: 1px solid #e5e7eb;
+    padding: 0.35em 0.65em;
+    text-align: left;
+  }
+  :global(.markdown-body th) { background-color: #f9fafb; font-weight: 600; }
+  :global(.markdown-body > *:first-child) { margin-top: 0; }
+  :global(.markdown-body > *:last-child) { margin-bottom: 0; }
+</style>

@@ -90,6 +90,8 @@ export interface DiffResult {
   fromRef: string;
   /** The "to" commit reference */
   toRef: string;
+  /** The actual git commands that were executed to produce this diff */
+  gitCommands?: string[];
 }
 
 /** API connection info (reused from agent) */
