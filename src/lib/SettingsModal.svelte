@@ -86,8 +86,8 @@
   }
 
   function addKeyword() {
-    const keyword = newKeyword.trim().toLowerCase();
-    if (keyword && !excludeKeywords.includes(keyword)) {
+    const keyword = newKeyword.trim();
+    if (keyword && !excludeKeywords.some(k => k.toLowerCase() === keyword.toLowerCase())) {
       excludeKeywords = [...excludeKeywords, keyword];
       newKeyword = "";
     }

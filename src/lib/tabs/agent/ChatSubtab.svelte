@@ -2,6 +2,8 @@
   import { untrack } from "svelte";
   import { marked } from "marked";
   import { sendChatMessage, getAgentModels } from "./api";
+  import type { AgentSettings } from "../../../types";
+  import { DEFAULT_AGENT_SETTINGS } from "../../../types";
 
   // Configure marked for safe, sane defaults
   marked.setOptions({
@@ -18,6 +20,7 @@
 
   const STORAGE_KEY = 'agent-chat-sessions';
   const MODEL_STORAGE_KEY = 'agent-chat-selected-model';
+  const AGENT_SETTINGS_KEY = 'agent-settings';
   const DEFAULT_MODEL = 'gemini-2.0-flash';
 
   // Chat sessions state
@@ -85,6 +88,19 @@
 
   // ============== Model Helpers ==============
 
+  // Load agent filter settings from localStorage
+  function getAgentSettings(): AgentSettings {
+    try {
+      const stored = localStorage.getItem(AGENT_SETTINGS_KEY);
+      if (stored) {
+        return JSON.parse(stored) as AgentSettings;
+      }
+    } catch (e) {
+      console.error('Failed to load agent settings:', e);
+    }
+    return DEFAULT_AGENT_SETTINGS;
+  }
+
   // Load available models from the API
   async function loadModels() {
     modelsLoading = true;
@@ -92,7 +108,7 @@
     try {
       const data = await getAgentModels();
       // Filter to models that support generateContent and map to ModelOption
-      availableModels = (data.models || [])
+      let models: ModelOption[] = (data.models || [])
         .filter((m: any) => 
           m.supportedGenerationMethods?.includes('generateContent')
         )
@@ -102,6 +118,19 @@
           description: m.description,
         }))
         .sort((a: ModelOption, b: ModelOption) => a.displayName.localeCompare(b.displayName));
+      
+      // Apply keyword filtering from agent settings
+      const settings = getAgentSettings();
+      if (settings.filterTextGenerationOnly && settings.excludeKeywords?.length > 0) {
+        models = models.filter(model => {
+          const searchText = `${model.id} ${model.displayName} ${model.description || ''}`.toLowerCase();
+          return !settings.excludeKeywords.some(keyword => 
+            searchText.includes(keyword.toLowerCase())
+          );
+        });
+      }
+      
+      availableModels = models;
       
       // If selected model isn't in the list, fall back to default
       if (availableModels.length > 0 && !availableModels.find(m => m.id === selectedModel)) {
