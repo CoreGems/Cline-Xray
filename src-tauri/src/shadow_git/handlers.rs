@@ -533,7 +533,10 @@ pub async fn task_diff_handler(
     Query(params): Query<TaskDiffQuery>,
 ) -> Result<Json<DiffResult>, (StatusCode, Json<ChangesErrorResponse>)> {
     let workspace_id = params.workspace.clone();
-    let excludes = params.exclude.clone();
+    let explicit_excludes = params.exclude.clone();
+
+    // Merge with .changesignore patterns (auto-load if no explicit excludes)
+    let excludes = crate::changesignore::merge_excludes(&explicit_excludes);
 
     if workspace_id.is_empty() {
         return Err((
@@ -706,8 +709,11 @@ pub async fn subtask_diff_handler(
     Query(params): Query<SubtaskDiffQuery>,
 ) -> Result<Json<DiffResult>, (StatusCode, Json<ChangesErrorResponse>)> {
     let workspace_id = params.workspace.clone();
-    let excludes = params.exclude.clone();
+    let explicit_excludes = params.exclude.clone();
     let task_id = path.task_id;
+
+    // Merge with .changesignore patterns (auto-load if no explicit excludes)
+    let excludes = crate::changesignore::merge_excludes(&explicit_excludes);
     let subtask_index = path.subtask_index;
 
     if workspace_id.is_empty() {
@@ -959,6 +965,117 @@ pub async fn file_contents_handler(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ChangesErrorResponse {
                     error: format!("Failed to get file contents: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+// ============ .changesignore Handlers ============
+
+/// Get the current .changesignore patterns
+///
+/// Returns the parsed exclude patterns from the `.changesignore` file in the
+/// project root. If the file doesn't exist, returns built-in defaults.
+///
+/// The response includes both the parsed patterns (for programmatic use)
+/// and the raw file content (for UI editing).
+#[utoipa::path(
+    get,
+    path = "/changes/ignore",
+    responses(
+        (status = 200, description = "Current .changesignore patterns", body = crate::changesignore::ChangesIgnoreResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes"]
+)]
+pub async fn get_ignore_handler(
+    State(_state): State<Arc<AppState>>,
+) -> Result<Json<crate::changesignore::ChangesIgnoreResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    log::info!("REST API: GET /changes/ignore");
+
+    let result = tokio::task::spawn_blocking(crate::changesignore::load_full).await;
+
+    match result {
+        Ok(response) => {
+            log::info!(
+                "REST API: GET /changes/ignore — {} patterns from {}",
+                response.patterns.len(),
+                response.source
+            );
+            Ok(Json(response))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to load .changesignore: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to load .changesignore: {}", e),
+                    code: 500,
+                }),
+            ))
+        }
+    }
+}
+
+/// Update the .changesignore file
+///
+/// Writes new content to the `.changesignore` file in the project root.
+/// The raw content is preserved as-is (including comments and formatting).
+/// Returns the updated parsed patterns.
+#[utoipa::path(
+    put,
+    path = "/changes/ignore",
+    request_body = crate::changesignore::ChangesIgnoreUpdateRequest,
+    responses(
+        (status = 200, description = ".changesignore updated successfully", body = crate::changesignore::ChangesIgnoreResponse),
+        (status = 500, description = "Internal server error", body = ChangesErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tags = ["changes"]
+)]
+pub async fn update_ignore_handler(
+    State(_state): State<Arc<AppState>>,
+    Json(body): Json<crate::changesignore::ChangesIgnoreUpdateRequest>,
+) -> Result<Json<crate::changesignore::ChangesIgnoreResponse>, (StatusCode, Json<ChangesErrorResponse>)> {
+    let raw_content = body.raw_content.clone();
+
+    log::info!(
+        "REST API: PUT /changes/ignore — {} bytes",
+        raw_content.len()
+    );
+
+    let result = tokio::task::spawn_blocking(move || {
+        crate::changesignore::save_content(&raw_content)
+    })
+    .await;
+
+    match result {
+        Ok(Ok(response)) => {
+            log::info!(
+                "REST API: PUT /changes/ignore — saved {} patterns",
+                response.patterns.len()
+            );
+            Ok(Json(response))
+        }
+        Ok(Err(e)) => {
+            log::error!("REST API: Failed to save .changesignore: {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: e,
+                    code: 500,
+                }),
+            ))
+        }
+        Err(e) => {
+            log::error!("REST API: Failed to save .changesignore (spawn): {}", e);
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ChangesErrorResponse {
+                    error: format!("Failed to save .changesignore: {}", e),
                     code: 500,
                 }),
             ))

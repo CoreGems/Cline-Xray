@@ -37,6 +37,8 @@ export interface TaskHistorySummary {
   hasFocusChain: boolean;
   /** First user message text (truncated to 200 chars) — task description */
   taskPrompt: string | null;
+  /** All subtask prompts (initial + feedback), each truncated to 200 chars */
+  subtaskPrompts: string[];
 }
 
 /** Response from GET /history/tasks */
@@ -295,7 +297,7 @@ export interface SubtasksResponse {
   subtasks: SubtaskEntry[];
 }
 
-export type HistorySubTab = 'Tasks' | 'Stats';
+export type HistorySubTab = 'Latest' | 'Tasks' | 'Stats';
 
 /** Subtab definition */
 export interface SubTabDefinition {

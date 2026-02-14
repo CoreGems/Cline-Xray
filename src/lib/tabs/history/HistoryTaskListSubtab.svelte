@@ -16,19 +16,20 @@
   let promptCopyLabel = $state('📋 Copy');
   let searchQuery = $state('');
 
-  // Derived filtered tasks
+  // Derived filtered tasks — searches through all subtask prompts (not just initial)
   let filteredTasks = $derived.by(() => {
     if (!searchQuery.trim()) return tasks;
     const q = searchQuery.toLowerCase().trim();
     return tasks.filter(t =>
       t.taskId.toLowerCase().includes(q) ||
       (t.taskPrompt && t.taskPrompt.toLowerCase().includes(q)) ||
-      (t.modelId && t.modelId.toLowerCase().includes(q))
+      (t.modelId && t.modelId.toLowerCase().includes(q)) ||
+      (t.subtaskPrompts && t.subtaskPrompts.some(p => p.toLowerCase().includes(q)))
     );
   });
 
   onMount(() => {
-    loadTasks(false);
+    loadTasks(true);
   });
 
   async function loadTasks(refresh: boolean) {

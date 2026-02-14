@@ -18,8 +18,12 @@ export interface ChatAttachment {
 export interface ChatMessage {
   /** Role of the message sender: "user" or "model" */
   role: 'user' | 'model';
-  /** The content of the message */
+  /** The content of the message (what gets sent to the API) */
   content: string;
+  /** Optional display-only content (shown in UI instead of `content` when present).
+   *  Useful when the API-sent content includes attachment context prefixes
+   *  that shouldn't clutter the chat bubble. */
+  displayContent?: string;
 }
 
 /** A saved chat session */
@@ -140,11 +144,5 @@ export interface ApiInfo {
   token: string;
 }
 
-/** Available subtabs in the Agent tab */
-export type AgentSubTab = 'Chat' | 'Agent Chat';
-
-/** Subtab definition */
-export interface SubTabDefinition {
-  id: AgentSubTab;
-  label: string;
-}
+/** Available subtabs in the Agent tab (kept for navigation store compatibility) */
+export type AgentSubTab = 'Chat' | 'Stashed';

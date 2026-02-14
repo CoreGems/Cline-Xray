@@ -71,28 +71,97 @@ export interface InferenceLogEntry {
   metadata: Record<string, unknown> | null;
 }
 
-// Agent settings configuration
-export interface AgentSettings {
+// Per-vendor filter settings
+export interface VendorFilterSettings {
+  /** Whether filtering is enabled for this vendor */
+  filterEnabled: boolean;
   /** Required generation methods for filtering models (e.g., ["generateContent"]) */
   requiredMethods: string[];
-  /** Whether to only show text generation models */
-  filterTextGenerationOnly: boolean;
   /** Keywords to exclude models by name/description (case-insensitive) */
   excludeKeywords: string[];
 }
 
-// Default agent settings - exclude common image/video/audio/embedding model keywords
-export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
-  requiredMethods: ["generateContent"],
-  filterTextGenerationOnly: true,
+// Agent settings configuration (per-vendor keyed)
+export interface AgentSettings {
+  /** Per-vendor filter settings, keyed by vendor ID (e.g., "gemini", "openai") */
+  vendors: Record<string, VendorFilterSettings>;
+
+  // --- Legacy fields (for backward-compat migration) ---
+  /** @deprecated Use vendors[vendorId].requiredMethods */
+  requiredMethods?: string[];
+  /** @deprecated Use vendors[vendorId].filterEnabled */
+  filterTextGenerationOnly?: boolean;
+  /** @deprecated Use vendors[vendorId].excludeKeywords */
+  excludeKeywords?: string[];
+}
+
+/** Helper: get vendor filter settings with fallback to defaults */
+export function getVendorSettings(
+  settings: AgentSettings,
+  vendorId: string,
+): VendorFilterSettings {
+  if (settings.vendors?.[vendorId]) {
+    return settings.vendors[vendorId];
+  }
+  // Fallback: check if legacy flat fields exist (pre-migration data for gemini)
+  if (vendorId === 'gemini' && settings.excludeKeywords) {
+    return {
+      filterEnabled: settings.filterTextGenerationOnly ?? true,
+      requiredMethods: settings.requiredMethods ?? ["generateContent"],
+      excludeKeywords: settings.excludeKeywords ?? [],
+    };
+  }
+  return DEFAULT_VENDOR_FILTER_SETTINGS;
+}
+
+// Default per-vendor filter settings (generic baseline)
+export const DEFAULT_VENDOR_FILTER_SETTINGS: VendorFilterSettings = {
+  filterEnabled: false,
+  requiredMethods: [],
+  excludeKeywords: [],
+};
+
+// Default OpenAI-specific filter settings
+export const DEFAULT_OPENAI_FILTER_SETTINGS: VendorFilterSettings = {
+  filterEnabled: true,
+  requiredMethods: [],
   excludeKeywords: [
-    "imagen",      // Image generation models
-    "veo",         // Video generation models
-    "banana",      // Nano Banana (image preview)
-    "audio",       // Audio models
-    "embedding",   // Embedding models (not for generation)
-    "robotics",    // Robotics models
-    "aqa",         // Attributed Question Answering
+    'instruct',        // Instruct-tuned variants (not for chat)
+    'realtime',        // Realtime API models
+    'audio',           // Audio models
+    'tts',             // Text-to-speech models
+    'whisper',         // Speech-to-text models
+    'dall-e',          // Image generation models
+    'embedding',       // Embedding models
+    'babbage',         // Legacy models
+    'davinci',         // Legacy models
+    'search',          // Search models
+    'similarity',      // Similarity models
+    'code-',           // Legacy code models
+    'text-',           // Legacy text models
+  ],
+};
+
+// Default Gemini-specific filter settings
+export const DEFAULT_GEMINI_FILTER_SETTINGS: VendorFilterSettings = {
+  filterEnabled: true,
+  requiredMethods: ["generateContent"],
+  excludeKeywords: [
+    "imagen",        // Image generation models
+    "veo",           // Video generation models
+    "banana",        // Nano Banana (image preview)
+    "audio",         // Audio models
+    "embedding",     // Embedding models (not for generation)
+    "robotics",      // Robotics models
+    "aqa",           // Attributed Question Answering
     "image preview", // Image preview models
   ]
+};
+
+// Default agent settings (ships with Gemini + OpenAI defaults)
+export const DEFAULT_AGENT_SETTINGS: AgentSettings = {
+  vendors: {
+    gemini: { ...DEFAULT_GEMINI_FILTER_SETTINGS },
+    openai: { ...DEFAULT_OPENAI_FILTER_SETTINGS },
+  },
 };

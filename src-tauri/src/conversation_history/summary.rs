@@ -15,6 +15,42 @@ use super::root::tasks_root;
 use super::types::*;
 use super::util::{epoch_ms_to_iso, truncate_utf8, PROMPT_TRUNCATE_LEN};
 
+/// Extract all subtask prompts from ui_messages.json.
+///
+/// Finds entries where `say = "task"` (initial) or `say = "user_feedback"` (feedback)
+/// and collects their prompt texts, each truncated to PROMPT_TRUNCATE_LEN.
+fn extract_subtask_prompts_from_ui(path: &Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+
+    let ui_messages: Vec<RawUiMessage> = match serde_json::from_str(&content) {
+        Ok(m) => m,
+        Err(_) => return vec![],
+    };
+
+    let mut prompts = Vec::new();
+    for msg in &ui_messages {
+        let say = match &msg.say {
+            Some(s) => s.as_str(),
+            None => continue,
+        };
+        match say {
+            "task" | "user_feedback" => {
+                if let Some(text) = &msg.text {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        prompts.push(truncate_utf8(trimmed, PROMPT_TRUNCATE_LEN));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    prompts
+}
+
 /// Scan all task directories and produce summaries.
 ///
 /// This parses each task's files (api_conversation_history.json, task_metadata.json,
@@ -143,6 +179,9 @@ fn parse_task_dir(task_id: &str, dir: &Path) -> Option<TaskHistorySummary> {
     // Get end time from ui_messages.json (just the last timestamp)
     let ended_at = parse_ui_messages_end_time(&ui_messages_path);
 
+    // Extract all subtask prompts from ui_messages.json (initial + feedback)
+    let subtask_prompts = extract_subtask_prompts_from_ui(&ui_messages_path);
+
     Some(TaskHistorySummary {
         task_id: task_id.to_string(),
         started_at,
@@ -161,6 +200,7 @@ fn parse_task_dir(task_id: &str, dir: &Path) -> Option<TaskHistorySummary> {
         ui_messages_size_bytes: ui_size,
         has_focus_chain,
         task_prompt,
+        subtask_prompts,
     })
 }
 

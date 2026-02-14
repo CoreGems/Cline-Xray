@@ -47,6 +47,9 @@ pub struct TaskHistorySummary {
     pub has_focus_chain: bool,
     /// First user message text (truncated to 200 chars) — task description
     pub task_prompt: Option<String>,
+    /// All subtask prompts (initial + feedback) from ui_messages.json, each truncated to 200 chars
+    #[serde(default)]
+    pub subtask_prompts: Vec<String>,
 }
 
 /// Response for GET /history/tasks

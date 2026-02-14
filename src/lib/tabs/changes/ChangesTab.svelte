@@ -2,10 +2,8 @@
   // Changes Tab - Main container with subtab navigation
   import TaskListSubtab from "./TaskListSubtab.svelte";
   import LatestSubtab from "./LatestSubtab.svelte";
-  import type { ChangesSubTab, SubTabDefinition } from "./types";
-
-  // Subtab state
-  let activeSubTab: ChangesSubTab = $state('Latest');
+  import { navigationStore } from "../../stores/navigationStore.svelte";
+  import type { SubTabDefinition } from "./types";
 
   const subTabs: SubTabDefinition[] = [
     { id: 'Latest', label: '⚡ Latest' },
@@ -21,8 +19,8 @@
     <div class="flex gap-1">
       {#each subTabs as tab}
         <button
-          onclick={() => activeSubTab = tab.id}
-          class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {activeSubTab === tab.id
+          onclick={() => navigationStore.activeChangesSubTab = tab.id}
+          class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {navigationStore.activeChangesSubTab === tab.id
             ? 'border-blue-500 text-blue-600'
             : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}"
         >
@@ -33,15 +31,15 @@
   </div>
 
   <!-- Subtab Content -->
-  {#if activeSubTab === 'Latest'}
+  {#if navigationStore.activeChangesSubTab === 'Latest'}
     <LatestSubtab />
-  {:else if activeSubTab === 'Tasks'}
+  {:else if navigationStore.activeChangesSubTab === 'Tasks'}
     <TaskListSubtab />
-  {:else if activeSubTab === 'Diff'}
+  {:else if navigationStore.activeChangesSubTab === 'Diff'}
     <div class="flex-1 flex items-center justify-center text-gray-400 text-sm">
       Diff view — coming soon
     </div>
-  {:else if activeSubTab === 'Export'}
+  {:else if navigationStore.activeChangesSubTab === 'Export'}
     <div class="flex-1 flex items-center justify-center text-gray-400 text-sm">
       Export — coming soon
     </div>

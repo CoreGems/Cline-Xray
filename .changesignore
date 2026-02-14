@@ -1,0 +1,30 @@
+# .changesignore — Patterns to exclude from Changes/Latest diff views
+# One pattern per line. These are passed as git pathspec exclusions.
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# Patterns must match the FULL path as stored in the checkpoint repo.
+# e.g. use "src-tauri/target" not just "target"
+
+# Rust build output (the big one — 1500+ files)
+src-tauri/target
+
+# Generated Tauri schemas (large, auto-generated)
+src-tauri/gen/schemas
+
+# Node dependencies
+node_modules
+
+# Build output
+dist
+build
+.output
+
+# Lock files (large, auto-generated)
+package-lock.json
+Cargo.lock
+
+# IDE / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db

@@ -40,11 +40,14 @@ pub async fn get_latest_handler(
     Query(params): Query<LatestQuery>,
 ) -> Result<Json<LatestResponse>, (StatusCode, Json<LatestErrorResponse>)> {
     let scope = params.scope.clone();
-    let excludes = params.exclude.clone();
+    let explicit_excludes = params.exclude.clone();
+
+    // Merge with .changesignore patterns (auto-load if no explicit excludes)
+    let excludes = crate::changesignore::merge_excludes(&explicit_excludes);
 
     log::info!(
-        "REST API: GET /latest — scope={}, excludes={:?}",
-        scope, excludes
+        "REST API: GET /latest — scope={}, excludes={:?} (explicit={:?})",
+        scope, excludes, explicit_excludes
     );
 
     // Run the entire orchestration in a blocking context (filesystem + git CLI)

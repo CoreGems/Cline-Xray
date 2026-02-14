@@ -379,7 +379,7 @@
         onclick={askLlm}
         disabled={loading || !data || askLlmLoading}
         class="px-4 py-1.5 text-sm font-medium text-white bg-purple-600 rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-        title="Send task artifacts (with full file contents) to Agent Chat"
+        title="Send task artifacts (with full file contents) to Chat"
       >
         {askLlmLoading ? '⏳ Loading files...' : '🤖 Ask LLM'}
       </button>

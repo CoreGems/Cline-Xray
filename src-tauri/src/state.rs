@@ -52,6 +52,9 @@ pub struct AppState {
     // Gemini API configuration
     pub gemini_api_key: String,
     
+    // OpenAI API configuration
+    pub openai_api_key: String,
+    
     // Access log storage
     access_log: RwLock<Vec<AccessLogEntry>>,
     log_counter: RwLock<u64>,
@@ -68,6 +71,7 @@ impl AppState {
         jira_email: String,
         jira_api_token: String,
         gemini_api_key: String,
+        openai_api_key: String,
     ) -> Arc<Self> {
         Arc::new(Self {
             auth_token,
@@ -77,6 +81,7 @@ impl AppState {
             jira_email,
             jira_api_token,
             gemini_api_key,
+            openai_api_key,
             access_log: RwLock::new(Vec::new()),
             log_counter: RwLock::new(0),
             inference_log: RwLock::new(Vec::new()),

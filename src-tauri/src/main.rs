@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod changesignore;
 mod config;
 mod conversation_history;
 mod jira;
@@ -528,7 +529,7 @@ fn main() {
     
     for env_path in env_paths {
         if env_path.exists() {
-            match dotenvy::from_path(&env_path) {
+            match dotenvy::from_path_override(&env_path) {
                 Ok(_) => {
                     info!("Loaded .env file from: {:?}", env_path);
                     break;
@@ -553,6 +554,15 @@ fn main() {
         info!("Gemini API key configured ({}...)", &gemini_api_key[..8.min(gemini_api_key.len())]);
     }
 
+    // Get OpenAI API key from environment (now loaded from .env)
+    let openai_api_key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| {
+        info!("OPENAI_API_KEY not set in environment");
+        String::new()
+    });
+    if !openai_api_key.is_empty() {
+        info!("OpenAI API key configured ({}...)", &openai_api_key[..8.min(openai_api_key.len())]);
+    }
+
     // Generate random auth token for this session
     let rest_auth_token = generate_auth_token();
     info!("Generated REST API auth token");
@@ -564,6 +574,7 @@ fn main() {
         jira_settings.email,
         jira_token,
         gemini_api_key,
+        openai_api_key,
     );
 
     // Store app_state globally for Tauri commands to access

@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff, fetchSubtaskDiff, nukeWorkspace } from "./api";
-  import { fetchTaskSubtasks } from "../history/api";
+  import { fetchWorkspaces, fetchTasks, fetchSteps, fetchStepDiff, fetchTaskDiff, fetchSubtaskDiff, nukeWorkspace, fetchFileContents } from "./api";
+  import { fetchTaskSubtasks, fetchHistoryTasks } from "../history/api";
+  import { navigationStore } from "../../stores/navigationStore.svelte";
+  import { pinStore } from "../../stores/pinStore.svelte";
   import type { SubtasksResponse } from "../history/types";
-  import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult } from "./types";
+  import type { ChatAttachment } from "../agent/types";
+  import type { WorkspaceInfo, WorkspacesResponse, ClineTaskSummary, TasksResponse, CheckpointStep, DiffResult, DiffFile } from "./types";
 
   // ---- Workspace state ----
   let wsLoading = $state(true);
@@ -53,13 +56,230 @@
   let showDiscoveryGitCmd = $state(false);
   let gitCmdCopyLabel = $state('📋');
 
+  // ---- Ask LLM state ----
+  let askLlmLoading = $state(false);
+  let askLlmSubtaskLoading = $state(false);
+
+  // ---- Task prompt enrichment (from History) ----
+  let taskPromptMap: Map<string, string> = $state(new Map());
+  let promptsLoading = $state(false);
+
+  // ---- Workspace prompt enrichment (from History) ----
+  let workspacePromptMap: Map<string, string> = $state(new Map());
+  let wsPromptsLoading = $state(false);
+
+  // ---- Search state (shared across workspace & task views) ----
+  let searchQuery = $state('');
+  /** All subtask prompts per workspace (workspaceId → string[]) for search filtering */
+  let workspaceAllPromptsMap: Map<string, string[]> = $state(new Map());
+  /** All subtask prompts per task (taskId → string[]) for search filtering */
+  let taskSubtaskPromptsMap: Map<string, string[]> = $state(new Map());
+
+  // Pin filter state is persisted in pinStore (survives tab switches & app restarts)
+
   // ---- Nuke state ----
   let showNukeConfirm = $state(false);
   let nukeLoading = $state(false);
   let nukeError: string | null = $state(null);
 
-  onMount(() => {
-    loadWorkspaces(false);
+  // ---- Derived filtered lists (search across both views) ----
+  /** Count of pinned workspaces in current list (reactive) */
+  let pinnedWsCount = $derived.by(() => {
+    const pins = pinStore.pinnedWorkspaceSet;
+    return workspaces.filter(ws => pins.has(ws.id)).length;
+  });
+
+  let filteredWorkspaces = $derived.by(() => {
+    let result = workspaces;
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(ws => {
+        if (ws.id.toLowerCase().includes(q)) return true;
+        const latestPrompt = workspacePromptMap.get(ws.id);
+        if (latestPrompt && latestPrompt.toLowerCase().includes(q)) return true;
+        const allPrompts = workspaceAllPromptsMap.get(ws.id);
+        if (allPrompts && allPrompts.some(p => p.toLowerCase().includes(q))) return true;
+        return false;
+      });
+    }
+
+    // Apply workspace pin filter
+    if (pinStore.wsFilter === 'pinned') {
+      result = result.filter(ws => pinStore.isWorkspacePinned(ws.id));
+    } else {
+      // In "all" view, sort pinned workspaces to the top
+      const pinned = result.filter(ws => pinStore.isWorkspacePinned(ws.id));
+      const unpinned = result.filter(ws => !pinStore.isWorkspacePinned(ws.id));
+      result = [...pinned, ...unpinned];
+    }
+
+    return result;
+  });
+
+  /** Count of pinned tasks in the current workspace (reactive) */
+  let pinnedTaskCount = $derived.by(() => {
+    // Access pinStore.pinnedSet to create reactivity
+    const pins = pinStore.pinnedSet;
+    return tasks.filter(t => pins.has(t.taskId)).length;
+  });
+
+  let filteredTasks = $derived.by(() => {
+    let result = tasks;
+
+    // Apply search filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(t => {
+        if (t.taskId.toLowerCase().includes(q)) return true;
+        const prompt = taskPromptMap.get(t.taskId);
+        if (prompt && prompt.toLowerCase().includes(q)) return true;
+        const subtaskPrompts = taskSubtaskPromptsMap.get(t.taskId);
+        if (subtaskPrompts && subtaskPrompts.some(p => p.toLowerCase().includes(q))) return true;
+        return false;
+      });
+    }
+
+    // Apply pin filter
+    if (pinStore.taskFilter === 'pinned') {
+      result = result.filter(t => pinStore.isPinned(t.taskId));
+    } else {
+      // In "all" view, sort pinned tasks to the top (preserving relative order within groups)
+      const pinned = result.filter(t => pinStore.isPinned(t.taskId));
+      const unpinned = result.filter(t => !pinStore.isPinned(t.taskId));
+      result = [...pinned, ...unpinned];
+    }
+
+    return result;
+  });
+
+  // ── Expansion state persistence ───────────────────────────────────────────
+
+  /** Save current expansion state to navigation store (persisted to localStorage) */
+  function saveExpansionState() {
+    navigationStore.updateChangesTasksState({
+      selectedWorkspaceId: selectedWorkspace?.id ?? null,
+      expandedTaskId,
+      taskDiffId,
+      subtaskTaskId,
+      subtaskDiffIndex,
+    });
+  }
+
+  /** Core: expand task diff (no toggle, no event) — used by restore & UI */
+  async function expandTaskDiff(tid: string) {
+    if (!selectedWorkspace) return;
+    taskDiffId = tid;
+    taskDiffLoading = true;
+    taskDiffError = null;
+    taskDiffResult = null;
+    taskDiffCopyLabel = '📋 Copy';
+    try {
+      taskDiffResult = await fetchTaskDiff(tid, selectedWorkspace.id);
+    } catch (e: any) {
+      taskDiffError = e.message || String(e);
+    } finally {
+      taskDiffLoading = false;
+    }
+  }
+
+  /** Core: expand subtasks panel (no toggle, no event) — used by restore & UI */
+  async function expandSubtasks(tid: string) {
+    if (!selectedWorkspace) return;
+    subtaskTaskId = tid;
+    subtasksLoading = true;
+    subtasksError = null;
+    subtasksData = null;
+    subtaskDiffIndex = null;
+    subtaskDiffResult = null;
+    try {
+      subtasksData = await fetchTaskSubtasks(tid);
+    } catch (e: any) {
+      subtasksError = e.message || String(e);
+    } finally {
+      subtasksLoading = false;
+    }
+  }
+
+  /** Core: expand subtask diff (no toggle, no event) — used by restore & UI */
+  async function expandSubtaskDiff(index: number) {
+    if (!subtaskTaskId || !selectedWorkspace) return;
+    subtaskDiffIndex = index;
+    subtaskDiffLoading = true;
+    subtaskDiffError = null;
+    subtaskDiffResult = null;
+    subtaskDiffCopyLabel = '📋 Copy';
+    try {
+      subtaskDiffResult = await fetchSubtaskDiff(subtaskTaskId, index, selectedWorkspace.id);
+    } catch (e: any) {
+      subtaskDiffError = e.message || String(e);
+    } finally {
+      subtaskDiffLoading = false;
+    }
+  }
+
+  /** Core: expand steps for a task (no toggle, no event) — used by restore */
+  async function expandSteps(task: ClineTaskSummary) {
+    expandedTaskId = task.taskId;
+    stepsLoading = true;
+    stepsError = null;
+    steps = [];
+    try {
+      const resp = await fetchSteps(task.taskId, task.workspaceId);
+      steps = resp.steps.slice().reverse();
+    } catch (e: any) {
+      stepsError = e.message || String(e);
+    } finally {
+      stepsLoading = false;
+    }
+  }
+
+  /**
+   * Restore previously saved expansion state after workspaces load.
+   * Chains: workspace → tasks → (task diff | subtasks | steps) in parallel.
+   */
+  async function restoreSavedState() {
+    const saved = navigationStore.changesTasksState;
+    if (!saved.selectedWorkspaceId) return;
+
+    const ws = workspaces.find(w => w.id === saved.selectedWorkspaceId);
+    if (!ws) return;
+
+    // Restore workspace selection (loads tasks)
+    await selectWorkspace(ws);
+    if (tasks.length === 0) return;
+
+    // Restore task-level expansions in parallel
+    const promises: Promise<void>[] = [];
+
+    if (saved.taskDiffId && tasks.find(t => t.taskId === saved.taskDiffId)) {
+      promises.push(expandTaskDiff(saved.taskDiffId));
+    }
+
+    if (saved.subtaskTaskId && tasks.find(t => t.taskId === saved.subtaskTaskId)) {
+      promises.push(
+        expandSubtasks(saved.subtaskTaskId).then(async () => {
+          // After subtasks loaded, restore subtask diff if saved
+          if (saved.subtaskDiffIndex !== null && subtasksData && saved.subtaskDiffIndex < subtasksData.subtasks.length) {
+            await expandSubtaskDiff(saved.subtaskDiffIndex);
+          }
+        })
+      );
+    }
+
+    if (saved.expandedTaskId && tasks.find(t => t.taskId === saved.expandedTaskId)) {
+      const task = tasks.find(t => t.taskId === saved.expandedTaskId)!;
+      promises.push(expandSteps(task));
+    }
+
+    await Promise.all(promises);
+  }
+
+  onMount(async () => {
+    await loadWorkspaces(false);
+    // Restore saved expansion state (fire-and-forget — non-blocking for workspace prompt enrichment)
+    restoreSavedState();
   });
 
   async function loadWorkspaces(refresh: boolean) {
@@ -74,6 +294,72 @@
     } finally {
       wsLoading = false;
     }
+    // Fire-and-forget: enrich workspaces with latest task prompt from History
+    if (workspaces.length > 0) {
+      enrichWorkspacePrompts(workspaces);
+    }
+  }
+
+  /**
+   * For each workspace, fetch its task list, find the latest task,
+   * and look up that task's prompt from the History tab.
+   * Runs in the background (non-blocking) so the workspace table shows immediately.
+   */
+  async function enrichWorkspacePrompts(wsList: WorkspaceInfo[]) {
+    wsPromptsLoading = true;
+    try {
+      // 1. Fetch history tasks once (contains taskId → prompt mapping)
+      const historyResp = await fetchHistoryTasks(false);
+      const historyPromptMap = new Map<string, string>();
+      for (const ht of historyResp.tasks) {
+        if (ht.taskPrompt) {
+          historyPromptMap.set(ht.taskId, ht.taskPrompt);
+        }
+      }
+
+      // Also build a map of taskId → subtaskPrompts for search
+      const historySubtaskPromptsMap = new Map<string, string[]>();
+      for (const ht of historyResp.tasks) {
+        if (ht.subtaskPrompts && ht.subtaskPrompts.length > 0) {
+          historySubtaskPromptsMap.set(ht.taskId, ht.subtaskPrompts);
+        }
+      }
+
+      // 2. For each workspace, fetch its tasks and find the latest task's prompt
+      const newMap = new Map<string, string>();
+      const newAllPromptsMap = new Map<string, string[]>();
+      const fetches = wsList.map(async (ws) => {
+        try {
+          const tasksResp = await fetchTasks(ws.id, false);
+          if (tasksResp.tasks.length > 0) {
+            // Tasks are sorted newest-first; take the latest
+            const latestTask = tasksResp.tasks[0];
+            const prompt = historyPromptMap.get(latestTask.taskId);
+            if (prompt) {
+              newMap.set(ws.id, prompt);
+            }
+            // Collect all subtask prompts across all tasks in this workspace
+            const allPrompts: string[] = [];
+            for (const t of tasksResp.tasks) {
+              const sp = historySubtaskPromptsMap.get(t.taskId);
+              if (sp) allPrompts.push(...sp);
+            }
+            if (allPrompts.length > 0) {
+              newAllPromptsMap.set(ws.id, allPrompts);
+            }
+          }
+        } catch (e: any) {
+          console.warn(`[enrichWorkspacePrompts] Failed to fetch tasks for workspace ${ws.id}:`, e.message);
+        }
+      });
+      await Promise.all(fetches);
+      workspacePromptMap = newMap;
+      workspaceAllPromptsMap = newAllPromptsMap;
+    } catch (e: any) {
+      console.warn('[enrichWorkspacePrompts] Failed to fetch history tasks:', e.message);
+    } finally {
+      wsPromptsLoading = false;
+    }
   }
 
   async function selectWorkspace(ws: WorkspaceInfo) {
@@ -81,13 +367,17 @@
     taskLoading = true;
     taskError = null;
     tasks = [];
+    taskPromptMap = new Map();
     try {
       const resp: TasksResponse = await fetchTasks(ws.id, false);
       tasks = resp.tasks;
+      // Fire-and-forget: enrich tasks with prompts from History
+      enrichTaskPrompts(resp.tasks.map(t => t.taskId));
     } catch (e: any) {
       taskError = e.message || String(e);
     } finally {
       taskLoading = false;
+      saveExpansionState();
     }
   }
 
@@ -95,13 +385,46 @@
     if (!selectedWorkspace) return;
     taskLoading = true;
     taskError = null;
+    taskPromptMap = new Map();
     try {
       const resp: TasksResponse = await fetchTasks(selectedWorkspace.id, true);
       tasks = resp.tasks;
+      // Fire-and-forget: enrich tasks with prompts from History
+      enrichTaskPrompts(resp.tasks.map(t => t.taskId));
     } catch (e: any) {
       taskError = e.message || String(e);
     } finally {
       taskLoading = false;
+    }
+  }
+
+  /**
+   * Fetch conversation history task list and build a taskId → prompt map.
+   * Runs in the background (non-blocking) so the task table shows immediately.
+   */
+  async function enrichTaskPrompts(taskIds: string[]) {
+    if (taskIds.length === 0) return;
+    promptsLoading = true;
+    try {
+      const historyResp = await fetchHistoryTasks(false);
+      const newMap = new Map<string, string>();
+      const newSubtaskMap = new Map<string, string[]>();
+      for (const ht of historyResp.tasks) {
+        if (taskIds.includes(ht.taskId)) {
+          if (ht.taskPrompt) {
+            newMap.set(ht.taskId, ht.taskPrompt);
+          }
+          if (ht.subtaskPrompts && ht.subtaskPrompts.length > 0) {
+            newSubtaskMap.set(ht.taskId, ht.subtaskPrompts);
+          }
+        }
+      }
+      taskPromptMap = newMap;
+      taskSubtaskPromptsMap = newSubtaskMap;
+    } catch (e: any) {
+      console.warn('[enrichTaskPrompts] Failed to fetch history tasks for prompt enrichment:', e.message);
+    } finally {
+      promptsLoading = false;
     }
   }
 
@@ -110,56 +433,43 @@
     tasks = [];
     taskError = null;
     expandedTaskId = null;
+    taskDiffId = null;
+    taskDiffResult = null;
+    subtaskTaskId = null;
+    subtasksData = null;
+    subtaskDiffIndex = null;
+    subtaskDiffResult = null;
     steps = [];
+    taskPromptMap = new Map();
+    saveExpansionState();
   }
 
   async function toggleSteps(task: ClineTaskSummary) {
     if (expandedTaskId === task.taskId) {
-      // Collapse
       expandedTaskId = null;
       steps = [];
       stepsError = null;
+      saveExpansionState();
       return;
     }
-    // Expand
-    expandedTaskId = task.taskId;
-    stepsLoading = true;
-    stepsError = null;
-    steps = [];
-    try {
-      const resp = await fetchSteps(task.taskId, task.workspaceId);
-      steps = resp.steps.slice().reverse(); // latest step on top
-    } catch (e: any) {
-      stepsError = e.message || String(e);
-    } finally {
-      stepsLoading = false;
-    }
+    await expandSteps(task);
+    saveExpansionState();
   }
 
   async function loadTaskDiff(task: ClineTaskSummary, e: MouseEvent) {
-    e.stopPropagation(); // Don't toggle steps expansion
+    e.stopPropagation();
     if (!selectedWorkspace) return;
 
     if (taskDiffId === task.taskId) {
-      // Collapse
       taskDiffId = null;
       taskDiffResult = null;
       taskDiffError = null;
+      saveExpansionState();
       return;
     }
 
-    taskDiffId = task.taskId;
-    taskDiffLoading = true;
-    taskDiffError = null;
-    taskDiffResult = null;
-    taskDiffCopyLabel = '📋 Copy';
-    try {
-      taskDiffResult = await fetchTaskDiff(task.taskId, selectedWorkspace.id);
-    } catch (e: any) {
-      taskDiffError = e.message || String(e);
-    } finally {
-      taskDiffLoading = false;
-    }
+    await expandTaskDiff(task.taskId);
+    saveExpansionState();
   }
 
   async function loadStepDiff(step: CheckpointStep, e: MouseEvent) {
@@ -197,22 +507,12 @@
       subtasksError = null;
       subtaskDiffIndex = null;
       subtaskDiffResult = null;
+      saveExpansionState();
       return;
     }
 
-    subtaskTaskId = task.taskId;
-    subtasksLoading = true;
-    subtasksError = null;
-    subtasksData = null;
-    subtaskDiffIndex = null;
-    subtaskDiffResult = null;
-    try {
-      subtasksData = await fetchTaskSubtasks(task.taskId);
-    } catch (e: any) {
-      subtasksError = e.message || String(e);
-    } finally {
-      subtasksLoading = false;
-    }
+    await expandSubtasks(task.taskId);
+    saveExpansionState();
   }
 
   async function loadSubtaskDiff(index: number, e: MouseEvent) {
@@ -223,21 +523,12 @@
       subtaskDiffIndex = null;
       subtaskDiffResult = null;
       subtaskDiffError = null;
+      saveExpansionState();
       return;
     }
 
-    subtaskDiffIndex = index;
-    subtaskDiffLoading = true;
-    subtaskDiffError = null;
-    subtaskDiffResult = null;
-    subtaskDiffCopyLabel = '📋 Copy';
-    try {
-      subtaskDiffResult = await fetchSubtaskDiff(subtaskTaskId, index, selectedWorkspace.id);
-    } catch (e: any) {
-      subtaskDiffError = e.message || String(e);
-    } finally {
-      subtaskDiffLoading = false;
-    }
+    await expandSubtaskDiff(index);
+    saveExpansionState();
   }
 
   function shortHash(hash: string): string {
@@ -279,10 +570,163 @@
       subtasksData = null;
       // Refresh tasks to confirm empty
       await refreshTasks();
+      saveExpansionState();
     } catch (e: any) {
       nukeError = e.message || String(e);
     } finally {
       nukeLoading = false;
+    }
+  }
+
+  function extractPerFileDiffs(patch: string, files: DiffFile[]): string {
+    const fileSections: string[] = [];
+    const parts = patch.split(/^diff --git /m);
+    const fileMap = new Map<string, DiffFile>();
+    for (const f of files) fileMap.set(f.path, f);
+    for (const part of parts) {
+      if (!part.trim()) continue;
+      const section = 'diff --git ' + part;
+      const headerMatch = section.match(/^diff --git a\/(.+?) b\/(.+)/m);
+      const filePath = headerMatch ? headerMatch[2] : '(unknown)';
+      const fileMeta = fileMap.get(filePath);
+      const status = fileMeta ? fileMeta.status.toUpperCase() : 'MODIFIED';
+      const added = fileMeta ? fileMeta.linesAdded : 0;
+      const removed = fileMeta ? fileMeta.linesRemoved : 0;
+      fileSections.push(
+        `${'='.repeat(60)}\nFILE: ${filePath}\nSTATUS: ${status}  (+${added} -${removed})\n${'='.repeat(60)}\n` + section.trimEnd()
+      );
+    }
+    return fileSections.length > 0 ? fileSections.join('\n\n') : patch;
+  }
+
+  async function askLlmForTask(task: ClineTaskSummary, ev: MouseEvent) {
+    ev.stopPropagation();
+    if (!selectedWorkspace || !taskDiffResult) return;
+    askLlmLoading = true;
+    try {
+      const atts: ChatAttachment[] = [];
+      const diff = taskDiffResult;
+      const workspaceId = selectedWorkspace.id;
+
+      // 1. Fetch subtask prompts
+      try {
+        const subtasksResp = await fetchTaskSubtasks(task.taskId);
+        if (subtasksResp.subtasks && subtasksResp.subtasks.length > 0) {
+          const allPrompts = subtasksResp.subtasks.map((s: any) =>
+            `${s.isInitialTask ? '🎯 Initial Task' : `💬 Feedback #${s.subtaskIndex}`} (${formatDate(s.timestamp)}):\n${s.prompt}`
+          ).join('\n\n---\n\n');
+          atts.push({ id: `prompts-${Date.now()}`, label: `All Prompts (${subtasksResp.subtasks.length})`, type: 'prompts', content: allPrompts, meta: { count: subtasksResp.subtasks.length } });
+        }
+      } catch (e: any) {
+        console.warn('[askLlmForTask] Failed to fetch subtasks/prompts:', e.message);
+      }
+
+      // 2. Fetch actual file contents from shadow git
+      if (diff.files.length > 0) {
+        const nonDeletedPaths = diff.files.filter((f: any) => f.status !== 'deleted').map((f: any) => f.path);
+        const deletedFiles = diff.files.filter((f: any) => f.status === 'deleted');
+        let fileBodySections: string[] = [];
+        if (nonDeletedPaths.length > 0) {
+          try {
+            const fileContentsResp = await fetchFileContents(workspaceId, diff.toRef, nonDeletedPaths);
+            const fileMeta = new Map(diff.files.map((f: any) => [f.path, f]));
+            for (const fc of fileContentsResp.files) {
+              const meta = fileMeta.get(fc.path);
+              const status = meta ? (meta as any).status.toUpperCase() : 'MODIFIED';
+              const added = meta ? (meta as any).linesAdded : 0;
+              const removed = meta ? (meta as any).linesRemoved : 0;
+              if (fc.content !== null) {
+                fileBodySections.push(`${'='.repeat(60)}\nFILE: ${fc.path}\nSTATUS: ${status}  (+${added} -${removed})  SIZE: ${fc.size ?? fc.content.length} bytes\n${'='.repeat(60)}\n` + fc.content);
+              } else {
+                fileBodySections.push(`${'='.repeat(60)}\nFILE: ${fc.path}\nSTATUS: ${status}  [content unavailable: ${fc.error || 'unknown error'}]\n${'='.repeat(60)}`);
+              }
+            }
+          } catch (e: any) {
+            console.warn('[askLlmForTask] Failed to fetch file contents, falling back to diff:', e.message);
+            if (diff.patch) fileBodySections = [extractPerFileDiffs(diff.patch, diff.files)];
+          }
+        }
+        for (const df of deletedFiles) {
+          fileBodySections.push(`${'='.repeat(60)}\nFILE: ${df.path}\nSTATUS: DELETED  (-${df.linesRemoved} lines)\n${'='.repeat(60)}\n[File was deleted in this task]`);
+        }
+        if (fileBodySections.length > 0) {
+          const fullContent = fileBodySections.join('\n\n');
+          atts.push({ id: `files-${Date.now()}`, label: `File Contents (${diff.files.length} files, ${(fullContent.length / 1024).toFixed(1)}KB)`, type: 'files', content: fullContent, meta: { count: diff.files.length, sizeKB: Math.round(fullContent.length / 1024) } });
+        }
+      }
+
+      // 3. Unified diff patch
+      if (diff.patch) {
+        atts.push({ id: `diff-${Date.now()}`, label: `Unified Diff (${(diff.patch.length / 1024).toFixed(1)}KB)`, type: 'diff', content: diff.patch, meta: { sizeKB: Math.round(diff.patch.length / 1024) } });
+      }
+
+      console.log('[askLlmForTask] attachments:', atts.length, atts.map(a => a.label));
+      navigationStore.navigateToChat({ attachments: atts, timestamp: Date.now() });
+    } finally {
+      askLlmLoading = false;
+    }
+  }
+
+  async function askLlmForSubtask(subtaskIndex: number, ev: MouseEvent) {
+    ev.stopPropagation();
+    if (!selectedWorkspace || !subtaskDiffResult || !subtasksData) return;
+    askLlmSubtaskLoading = true;
+    try {
+      const atts: ChatAttachment[] = [];
+      const diff = subtaskDiffResult;
+      const workspaceId = selectedWorkspace.id;
+      const subtask = subtasksData.subtasks[subtaskIndex];
+
+      // 1. Subtask prompt
+      if (subtask) {
+        const promptLabel = subtask.isInitialTask ? '🎯 Initial Task' : `💬 Feedback #${subtask.subtaskIndex}`;
+        const promptContent = `${promptLabel} (${formatDate(subtask.timestamp)}):\n${subtask.prompt}`;
+        atts.push({ id: `prompt-${Date.now()}`, label: `Subtask #${subtaskIndex} Prompt`, type: 'prompts', content: promptContent, meta: { count: 1 } });
+      }
+
+      // 2. Fetch actual file contents from shadow git
+      if (diff.files.length > 0) {
+        const nonDeletedPaths = diff.files.filter((f: any) => f.status !== 'deleted').map((f: any) => f.path);
+        const deletedFiles = diff.files.filter((f: any) => f.status === 'deleted');
+        let fileBodySections: string[] = [];
+        if (nonDeletedPaths.length > 0) {
+          try {
+            const fileContentsResp = await fetchFileContents(workspaceId, diff.toRef, nonDeletedPaths);
+            const fileMeta = new Map(diff.files.map((f: any) => [f.path, f]));
+            for (const fc of fileContentsResp.files) {
+              const meta = fileMeta.get(fc.path);
+              const status = meta ? (meta as any).status.toUpperCase() : 'MODIFIED';
+              const added = meta ? (meta as any).linesAdded : 0;
+              const removed = meta ? (meta as any).linesRemoved : 0;
+              if (fc.content !== null) {
+                fileBodySections.push(`${'='.repeat(60)}\nFILE: ${fc.path}\nSTATUS: ${status}  (+${added} -${removed})  SIZE: ${fc.size ?? fc.content.length} bytes\n${'='.repeat(60)}\n` + fc.content);
+              } else {
+                fileBodySections.push(`${'='.repeat(60)}\nFILE: ${fc.path}\nSTATUS: ${status}  [content unavailable: ${fc.error || 'unknown error'}]\n${'='.repeat(60)}`);
+              }
+            }
+          } catch (e: any) {
+            console.warn('[askLlmForSubtask] Failed to fetch file contents, falling back to diff:', e.message);
+            if (diff.patch) fileBodySections = [extractPerFileDiffs(diff.patch, diff.files)];
+          }
+        }
+        for (const df of deletedFiles) {
+          fileBodySections.push(`${'='.repeat(60)}\nFILE: ${df.path}\nSTATUS: DELETED  (-${df.linesRemoved} lines)\n${'='.repeat(60)}\n[File was deleted in this subtask]`);
+        }
+        if (fileBodySections.length > 0) {
+          const fullContent = fileBodySections.join('\n\n');
+          atts.push({ id: `files-${Date.now()}`, label: `File Contents (${diff.files.length} files, ${(fullContent.length / 1024).toFixed(1)}KB)`, type: 'files', content: fullContent, meta: { count: diff.files.length, sizeKB: Math.round(fullContent.length / 1024) } });
+        }
+      }
+
+      // 3. Unified diff patch
+      if (diff.patch) {
+        atts.push({ id: `diff-${Date.now()}`, label: `Subtask #${subtaskIndex} Diff (${(diff.patch.length / 1024).toFixed(1)}KB)`, type: 'diff', content: diff.patch, meta: { sizeKB: Math.round(diff.patch.length / 1024) } });
+      }
+
+      console.log('[askLlmForSubtask] attachments:', atts.length, atts.map(a => a.label));
+      navigationStore.navigateToChat({ attachments: atts, timestamp: Date.now() });
+    } finally {
+      askLlmSubtaskLoading = false;
     }
   }
 
@@ -332,6 +776,16 @@
         </p>
       </div>
       <div class="flex items-center gap-2">
+        <!-- Search bar (shared state, persists across views) -->
+        <div class="relative">
+          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+          <input
+            type="text"
+            bind:value={searchQuery}
+            placeholder="Search prompts..."
+            class="pl-8 pr-3 py-1.5 text-sm border-2 border-yellow-400 rounded-lg bg-yellow-50 focus:bg-white focus:border-yellow-500 focus:outline-none transition-colors w-48"
+          />
+        </div>
         <button
           onclick={() => { nukeError = null; showNukeConfirm = true; }}
           disabled={taskLoading || !selectedWorkspace?.active}
@@ -465,11 +919,37 @@
 
     <!-- Task Table -->
     {:else}
+      <!-- Pin Filter Toggle -->
+      <div class="flex items-center gap-1 mb-3">
+        <div class="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          <button
+            onclick={() => pinStore.taskFilter = 'all'}
+            class="px-3 py-1 text-xs font-medium rounded-md transition-colors {pinStore.taskFilter === 'all'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'}"
+          >
+            All ({tasks.length})
+          </button>
+          <button
+            onclick={() => pinStore.taskFilter = 'pinned'}
+            class="px-3 py-1 text-xs font-medium rounded-md transition-colors {pinStore.taskFilter === 'pinned'
+              ? 'bg-amber-500 text-white shadow-sm'
+              : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'}"
+          >
+            📌 Pinned ({pinnedTaskCount})
+          </button>
+        </div>
+        {#if pinStore.taskFilter === 'pinned' && pinnedTaskCount === 0}
+          <span class="text-xs text-gray-400 ml-2 italic">No pinned tasks — click 📌 on any task to pin it</span>
+        {/if}
+      </div>
+
       <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
         <table class="w-full text-sm">
           <thead class="bg-gray-50 border-b border-gray-200">
             <tr>
               <th class="w-8 px-4 py-3"></th>
+              <th class="w-8 px-1 py-3"></th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">#</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Task ID</th>
               <th class="text-right px-4 py-3 font-medium text-gray-600">Steps</th>
@@ -479,7 +959,7 @@
             </tr>
           </thead>
           <tbody>
-            {#each tasks as task, i}
+            {#each filteredTasks as task, i}
               <tr
                 class="border-b border-gray-100 hover:bg-blue-50 transition-colors cursor-pointer {i === 0 && expandedTaskId !== task.taskId ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' : ''} {expandedTaskId === task.taskId ? 'bg-indigo-50' : ''}"
                 onclick={() => toggleSteps(task)}
@@ -487,11 +967,27 @@
                 <td class="px-4 py-3 text-gray-400 text-xs text-center">
                   <span class="inline-block transition-transform {expandedTaskId === task.taskId ? 'rotate-90' : ''}">▸</span>
                 </td>
+                <td class="px-1 py-3 text-center">
+                  <button
+                    onclick={(e) => { e.stopPropagation(); pinStore.togglePin(task.taskId); }}
+                    class="text-sm leading-none transition-all hover:scale-125 {pinStore.isPinned(task.taskId) ? 'opacity-100 grayscale-0' : 'opacity-30 grayscale hover:opacity-60'}"
+                    title={pinStore.isPinned(task.taskId) ? 'Unpin this task' : 'Pin this task'}
+                  >📌</button>
+                </td>
                 <td class="px-4 py-3 text-gray-400 font-mono text-xs">{i + 1}</td>
-                <td class="px-4 py-3 font-mono font-medium text-gray-900">
-                  {task.taskId}
-                  {#if i === 0}
-                    <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                <td class="px-4 py-3">
+                  <div class="font-mono font-medium text-gray-900 text-xs">
+                    {task.taskId}
+                    {#if i === 0}
+                      <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                    {/if}
+                  </div>
+                  {#if taskPromptMap.has(task.taskId)}
+                    <div class="text-xs text-gray-500 truncate mt-0.5 max-w-[400px]" title={taskPromptMap.get(task.taskId)}>
+                      {taskPromptMap.get(task.taskId)}
+                    </div>
+                  {:else if promptsLoading}
+                    <div class="text-[10px] text-gray-400 mt-0.5 italic">loading prompt...</div>
                   {/if}
                 </td>
                 <td class="px-4 py-3 text-right font-mono text-gray-700">{task.steps}</td>
@@ -517,7 +1013,7 @@
               <!-- Task-level Full Diff Panel -->
               {#if taskDiffId === task.taskId}
                 <tr>
-                  <td colspan="7" class="p-0">
+                  <td colspan="8" class="p-0">
                     <div class="bg-purple-50/50 border-t border-b border-purple-200 px-6 py-4">
                       {#if taskDiffLoading}
                         <div class="flex items-center gap-2 py-3">
@@ -536,6 +1032,14 @@
                             <span class="font-semibold text-purple-700">Full Task Diff</span> · {shortHash(taskDiffResult.fromRef)} → {shortHash(taskDiffResult.toRef)} · {taskDiffResult.files.length} file{taskDiffResult.files.length !== 1 ? 's' : ''} · {Math.round(taskDiffResult.patch.length / 1024)}KB
                           </div>
                           <div class="flex items-center gap-2">
+                            <button
+                              onclick={(e) => askLlmForTask(task, e)}
+                              disabled={askLlmLoading}
+                              class="text-xs font-medium px-3 py-1 rounded bg-purple-600 hover:bg-purple-700 text-white transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="Send task artifacts (with full file contents) to Chat"
+                            >
+                              {askLlmLoading ? '⏳ Loading...' : '🤖 Ask LLM'}
+                            </button>
                             {#if taskDiffResult.patch}
                               <button
                                 onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(taskDiffResult!.patch); taskDiffCopyLabel = '✓ Copied!'; setTimeout(() => taskDiffCopyLabel = '📋 Copy Diff', 1500); }}
@@ -545,7 +1049,7 @@
                               </button>
                             {/if}
                             <button
-                              onclick={(e) => { e.stopPropagation(); taskDiffId = null; taskDiffResult = null; taskDiffError = null; }}
+                              onclick={(e) => { e.stopPropagation(); taskDiffId = null; taskDiffResult = null; taskDiffError = null; saveExpansionState(); }}
                               class="text-xs font-bold px-2 py-1 rounded bg-gray-200 hover:bg-red-100 text-gray-600 hover:text-red-700 transition-colors"
                               title="Close diff"
                             >✕</button>
@@ -603,7 +1107,7 @@
               <!-- Subtask Panel -->
               {#if subtaskTaskId === task.taskId}
                 <tr>
-                  <td colspan="7" class="p-0">
+                  <td colspan="8" class="p-0">
                     <div class="bg-teal-50/50 border-t border-b border-teal-200 px-6 py-4">
                       {#if subtasksLoading}
                         <div class="flex items-center gap-2 py-3">
@@ -621,7 +1125,7 @@
                             Subtasks ({subtasksData.totalSubtasks}) · Task: {subtasksData.taskId}
                           </div>
                           <button
-                            onclick={(e) => { e.stopPropagation(); subtaskTaskId = null; subtasksData = null; subtasksError = null; subtaskDiffIndex = null; subtaskDiffResult = null; }}
+                            onclick={(e) => { e.stopPropagation(); subtaskTaskId = null; subtasksData = null; subtasksError = null; subtaskDiffIndex = null; subtaskDiffResult = null; saveExpansionState(); }}
                             class="text-xs font-bold px-2 py-1 rounded bg-gray-200 hover:bg-red-100 text-gray-600 hover:text-red-700 transition-colors"
                             title="Close subtasks"
                           >✕</button>
@@ -673,14 +1177,24 @@
                                         <div class="text-[10px] text-gray-400 font-mono">
                                           <span class="font-semibold text-teal-700">Subtask #{subtaskDiffIndex} Diff</span> · {shortHash(subtaskDiffResult.fromRef)} → {shortHash(subtaskDiffResult.toRef)} · {subtaskDiffResult.files.length} file{subtaskDiffResult.files.length !== 1 ? 's' : ''} · {Math.round(subtaskDiffResult.patch.length / 1024)}KB
                                         </div>
-                                        {#if subtaskDiffResult.patch}
+                                        <div class="flex items-center gap-1.5">
                                           <button
-                                            onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(subtaskDiffResult!.patch); subtaskDiffCopyLabel = '✓ Copied'; setTimeout(() => subtaskDiffCopyLabel = '📋 Copy', 1500); }}
-                                            class="text-[10px] font-medium px-2 py-0.5 rounded bg-teal-600 hover:bg-teal-700 text-white transition-colors"
+                                            onclick={(e) => askLlmForSubtask(si, e)}
+                                            disabled={askLlmSubtaskLoading}
+                                            class="text-[10px] font-medium px-2 py-0.5 rounded bg-teal-600 hover:bg-teal-700 text-white transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                                            title="Send subtask artifacts (prompt + file contents + diff) to Chat"
                                           >
-                                            {subtaskDiffCopyLabel}
+                                            {askLlmSubtaskLoading ? '⏳ Loading...' : '🤖 Ask LLM'}
                                           </button>
-                                        {/if}
+                                          {#if subtaskDiffResult.patch}
+                                            <button
+                                              onclick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(subtaskDiffResult!.patch); subtaskDiffCopyLabel = '✓ Copied'; setTimeout(() => subtaskDiffCopyLabel = '📋 Copy', 1500); }}
+                                              class="text-[10px] font-medium px-2 py-0.5 rounded bg-teal-600 hover:bg-teal-700 text-white transition-colors"
+                                            >
+                                              {subtaskDiffCopyLabel}
+                                            </button>
+                                          {/if}
+                                        </div>
                                       </div>
                                       <!-- Git Commands Toggle -->
                                       {#if subtaskDiffResult.gitCommands?.length}
@@ -739,7 +1253,7 @@
               <!-- Expanded Steps Panel -->
               {#if expandedTaskId === task.taskId}
                 <tr>
-                  <td colspan="6" class="p-0">
+                  <td colspan="8" class="p-0">
                     <div class="bg-gray-50 border-t border-b border-gray-200 px-6 py-4">
                       {#if stepsLoading}
                         <div class="flex items-center gap-2 py-3">
@@ -885,9 +1399,17 @@
 
       <!-- Summary -->
       <div class="mt-4 text-sm text-gray-500">
-        Total: {tasks.length} task{tasks.length !== 1 ? 's' : ''},
-        {tasks.reduce((s, t) => s + t.steps, 0)} steps,
-        {tasks.reduce((s, t) => s + t.filesChanged, 0)} files touched
+        {#if pinStore.taskFilter === 'pinned'}
+          📌 {filteredTasks.length} pinned task{filteredTasks.length !== 1 ? 's' : ''}
+        {:else if searchQuery.trim()}
+          Showing {filteredTasks.length} of {tasks.length} task{tasks.length !== 1 ? 's' : ''}
+          {#if pinnedTaskCount > 0}· 📌 {pinnedTaskCount} pinned{/if}
+        {:else}
+          Total: {tasks.length} task{tasks.length !== 1 ? 's' : ''},
+          {tasks.reduce((s, t) => s + t.steps, 0)} steps,
+          {tasks.reduce((s, t) => s + t.filesChanged, 0)} files touched
+          {#if pinnedTaskCount > 0}· 📌 {pinnedTaskCount} pinned{/if}
+        {/if}
       </div>
     {/if}
 
@@ -901,13 +1423,25 @@
           Scanning: <code class="bg-gray-100 px-1.5 py-0.5 rounded text-xs font-mono">{checkpointsRoot || '...'}</code>
         </p>
       </div>
-      <button
-        onclick={() => loadWorkspaces(true)}
-        disabled={wsLoading}
-        class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-      >
-        {wsLoading ? 'Scanning...' : 'Refresh'}
-      </button>
+      <div class="flex items-center gap-2">
+        <!-- Search bar (shared state, persists across views) -->
+        <div class="relative">
+          <span class="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">🔍</span>
+          <input
+            type="text"
+            bind:value={searchQuery}
+            placeholder="Search prompts..."
+            class="pl-8 pr-3 py-1.5 text-sm border-2 border-yellow-400 rounded-lg bg-yellow-50 focus:bg-white focus:border-yellow-500 focus:outline-none transition-colors w-48"
+          />
+        </div>
+        <button
+          onclick={() => loadWorkspaces(true)}
+          disabled={wsLoading}
+          class="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        >
+          {wsLoading ? 'Scanning...' : 'Refresh'}
+        </button>
+      </div>
     </div>
 
     <!-- Loading State -->
@@ -959,10 +1493,36 @@
 
     <!-- Workspace Table -->
     {:else}
+      <!-- Workspace Pin Filter Toggle -->
+      <div class="flex items-center gap-1 mb-3">
+        <div class="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+          <button
+            onclick={() => pinStore.wsFilter = 'all'}
+            class="px-3 py-1 text-xs font-medium rounded-md transition-colors {pinStore.wsFilter === 'all'
+              ? 'bg-blue-600 text-white shadow-sm'
+              : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'}"
+          >
+            All ({workspaces.length})
+          </button>
+          <button
+            onclick={() => pinStore.wsFilter = 'pinned'}
+            class="px-3 py-1 text-xs font-medium rounded-md transition-colors {pinStore.wsFilter === 'pinned'
+              ? 'bg-amber-500 text-white shadow-sm'
+              : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'}"
+          >
+            📌 Pinned ({pinnedWsCount})
+          </button>
+        </div>
+        {#if pinStore.wsFilter === 'pinned' && pinnedWsCount === 0}
+          <span class="text-xs text-gray-400 ml-2 italic">No pinned workspaces — click 📌 on any workspace to pin it</span>
+        {/if}
+      </div>
+
       <div class="bg-white border border-gray-200 rounded-lg overflow-hidden shadow-sm">
         <table class="w-full text-sm">
           <thead class="bg-gray-50 border-b border-gray-200">
             <tr>
+              <th class="w-8 px-1 py-3"></th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">#</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Workspace ID</th>
               <th class="text-left px-4 py-3 font-medium text-gray-600">Status</th>
@@ -973,16 +1533,32 @@
             </tr>
           </thead>
           <tbody>
-            {#each workspaces as ws, i}
+            {#each filteredWorkspaces as ws, i}
               <tr
                 class="border-b border-gray-100 hover:bg-blue-50 transition-colors cursor-pointer {i === 0 ? 'bg-blue-50/60 ring-1 ring-inset ring-blue-200' : ''}"
                 onclick={() => selectWorkspace(ws)}
               >
+                <td class="px-1 py-3 text-center">
+                  <button
+                    onclick={(e) => { e.stopPropagation(); pinStore.toggleWorkspacePin(ws.id); }}
+                    class="text-sm leading-none transition-all hover:scale-125 {pinStore.isWorkspacePinned(ws.id) ? 'opacity-100 grayscale-0' : 'opacity-30 grayscale hover:opacity-60'}"
+                    title={pinStore.isWorkspacePinned(ws.id) ? 'Unpin this workspace' : 'Pin this workspace'}
+                  >📌</button>
+                </td>
                 <td class="px-4 py-3 text-gray-400 font-mono text-xs">{i + 1}</td>
-                <td class="px-4 py-3 font-mono font-medium text-gray-900">
-                  {ws.id}
-                  {#if i === 0}
-                    <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                <td class="px-4 py-3">
+                  <div class="font-mono font-medium text-gray-900">
+                    {ws.id}
+                    {#if i === 0}
+                      <span class="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-600 text-white uppercase tracking-wide">Latest</span>
+                    {/if}
+                  </div>
+                  {#if workspacePromptMap.has(ws.id)}
+                    <div class="text-xs text-gray-500 truncate mt-0.5 max-w-[350px]" title={workspacePromptMap.get(ws.id)}>
+                      📝 {workspacePromptMap.get(ws.id)}
+                    </div>
+                  {:else if wsPromptsLoading}
+                    <div class="text-[10px] text-gray-400 mt-0.5 italic">loading latest task...</div>
                   {/if}
                 </td>
                 <td class="px-4 py-3">
@@ -1016,8 +1592,18 @@
 
       <!-- Summary -->
       <div class="mt-4 text-sm text-gray-500">
-        Total: {workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''},
-        {workspaces.reduce((sum, ws) => sum + ws.taskCount, 0)} tasks
+        {#if pinStore.wsFilter === 'pinned'}
+          📌 {filteredWorkspaces.length} pinned workspace{filteredWorkspaces.length !== 1 ? 's' : ''},
+          {filteredWorkspaces.reduce((sum, ws) => sum + ws.taskCount, 0)} tasks
+        {:else if searchQuery.trim()}
+          Showing {filteredWorkspaces.length} of {workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''},
+          {filteredWorkspaces.reduce((sum, ws) => sum + ws.taskCount, 0)} tasks
+          {#if pinnedWsCount > 0}· 📌 {pinnedWsCount} pinned{/if}
+        {:else}
+          Total: {workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''},
+          {workspaces.reduce((sum, ws) => sum + ws.taskCount, 0)} tasks
+          {#if pinnedWsCount > 0}· 📌 {pinnedWsCount} pinned{/if}
+        {/if}
       </div>
     {/if}
   {/if}

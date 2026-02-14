@@ -1,4 +1,4 @@
-use axum::{
+﻿use axum::{
     extract::{Query, State},
     http::StatusCode,
     Json,
@@ -634,10 +634,392 @@ pub async fn chat_handler(
     }))
 }
 
-/// List available Gemini models
+// ============ OpenAI API Types ============
+
+/// Request body for OpenAI chat endpoint
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub struct OpenAIChatRequest {
+    /// The user's message to send to OpenAI
+    pub message: String,
+    /// Optional conversation history for context
+    #[serde(default)]
+    pub history: Vec<ChatMessage>,
+    /// Optional model to use (defaults to "gpt-4o-mini")
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// A single OpenAI model returned by the list endpoint
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct OpenAIModel {
+    /// The model identifier (e.g., "gpt-4o-mini")
+    pub id: String,
+    /// Object type (always "model")
+    #[serde(default)]
+    pub object: Option<String>,
+    /// Unix timestamp of when the model was created
+    #[serde(default)]
+    pub created: Option<u64>,
+    /// The organization that owns the model
+    #[serde(default)]
+    pub owned_by: Option<String>,
+}
+
+/// Response from the OpenAI models list endpoint
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OpenAIModelsResponse {
+    /// List of available models
+    pub models: Vec<OpenAIModel>,
+    /// Total count of models
+    pub total: usize,
+}
+
+/// Internal struct for parsing OpenAI API models list response
+#[derive(Debug, Deserialize)]
+struct OpenAIModelsApiResponse {
+    data: Option<Vec<OpenAIModel>>,
+}
+
+/// OpenAI chat completion request structures
+#[derive(Debug, Serialize)]
+struct OpenAIChatCompletionRequest {
+    model: String,
+    messages: Vec<OpenAIChatCompletionMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIChatCompletionMessage {
+    role: String,
+    content: String,
+}
+
+/// OpenAI chat completion response structures
+#[derive(Debug, Deserialize)]
+struct OpenAIChatCompletionResponse {
+    choices: Option<Vec<OpenAIChatCompletionChoice>>,
+    usage: Option<OpenAIUsage>,
+    error: Option<OpenAIErrorDetail>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatCompletionChoice {
+    message: OpenAIChatCompletionChoiceMessage,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChatCompletionChoiceMessage {
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIUsage {
+    prompt_tokens: Option<u32>,
+    completion_tokens: Option<u32>,
+    total_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIErrorDetail {
+    message: String,
+}
+
+// ============ OpenAI Handlers ============
+
+/// Chat with OpenAI
 /// 
-/// Returns a list of all available Google Gemini models that can be used for inference.
-/// This endpoint queries the Gemini API to get the current list of models.
+/// Sends a message to OpenAI's chat completions API and returns the AI response.
+/// Supports conversation history for multi-turn conversations.
+#[utoipa::path(
+    post,
+    path = "/agent/openai/chat",
+    request_body = OpenAIChatRequest,
+    responses(
+        (status = 200, description = "Chat response from OpenAI", body = ChatResponse),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "agent"
+)]
+pub async fn openai_chat_handler(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<OpenAIChatRequest>,
+) -> Result<Json<ChatResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let start_time = Instant::now();
+    let model = request.model.as_deref().unwrap_or("gpt-4o-mini");
+    let user_message_preview: String = request.message.chars().take(100).collect();
+
+    log::info!("REST API: agent/openai/chat called with model: {}, message: {}...",
+        model, &request.message.chars().take(50).collect::<String>());
+
+    // Check if OpenAI API key is configured
+    if state.openai_api_key.is_empty() {
+        state.add_inference_log(
+            "openai".to_string(), model.to_string(), "chat".to_string(),
+            false, Some(400), start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some("OpenAI API key not configured".to_string()),
+            None, Some(user_message_preview), None,
+        );
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "OpenAI API key not configured. Please set OPENAI_API_KEY in .env file.".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Build messages array for OpenAI chat completions API
+    let mut messages: Vec<OpenAIChatCompletionMessage> = request
+        .history
+        .iter()
+        .map(|msg| OpenAIChatCompletionMessage {
+            role: if msg.role == "model" { "assistant".to_string() } else { msg.role.clone() },
+            content: msg.content.clone(),
+        })
+        .collect();
+
+    // Add the current user message
+    messages.push(OpenAIChatCompletionMessage {
+        role: "user".to_string(),
+        content: request.message.clone(),
+    });
+
+    let openai_request = OpenAIChatCompletionRequest {
+        model: model.to_string(),
+        messages,
+        temperature: None,
+        max_tokens: None,
+    };
+
+    // Call OpenAI API
+    let client = reqwest::Client::new();
+    let response = client
+        .post("https://api.openai.com/v1/chat/completions")
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", state.openai_api_key))
+        .json(&openai_request)
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("REST API: Failed to call OpenAI API: {}", e);
+            state.add_inference_log(
+                "openai".to_string(), model.to_string(), "chat".to_string(),
+                false, None, start_time.elapsed().as_millis() as u64,
+                None, None, None,
+                Some(format!("HTTP error: {}", e)),
+                None, Some(user_message_preview.clone()), None,
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to call OpenAI API: {}", e),
+                    code: 500,
+                }),
+            )
+        })?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| {
+        log::error!("REST API: Failed to read OpenAI response: {}", e);
+        state.add_inference_log(
+            "openai".to_string(), model.to_string(), "chat".to_string(),
+            false, Some(status.as_u16()), start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("Failed to read response: {}", e)),
+            None, Some(user_message_preview.clone()), None,
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to read OpenAI response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    if !status.is_success() {
+        log::error!("REST API: OpenAI API error ({}): {}", status, response_text);
+        state.add_inference_log(
+            "openai".to_string(), model.to_string(), "chat".to_string(),
+            false, Some(status.as_u16()), start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("API error: {}", response_text)),
+            None, Some(user_message_preview), None,
+        );
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("OpenAI API error: {}", response_text),
+                code: status.as_u16(),
+            }),
+        ));
+    }
+
+    let openai_response: OpenAIChatCompletionResponse = serde_json::from_str(&response_text).map_err(|e| {
+        log::error!("REST API: Failed to parse OpenAI response: {}", e);
+        state.add_inference_log(
+            "openai".to_string(), model.to_string(), "chat".to_string(),
+            false, Some(status.as_u16()), start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(format!("Failed to parse response: {}", e)),
+            None, Some(user_message_preview.clone()), None,
+        );
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: format!("Failed to parse OpenAI response: {}", e),
+                code: 500,
+            }),
+        )
+    })?;
+
+    // Check for API error in response
+    if let Some(error) = openai_response.error {
+        log::error!("REST API: OpenAI API returned error: {}", error.message);
+        state.add_inference_log(
+            "openai".to_string(), model.to_string(), "chat".to_string(),
+            false, Some(status.as_u16()), start_time.elapsed().as_millis() as u64,
+            None, None, None,
+            Some(error.message.clone()),
+            None, Some(user_message_preview), None,
+        );
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: error.message,
+                code: 500,
+            }),
+        ));
+    }
+
+    // Extract the response text
+    let ai_response = openai_response
+        .choices
+        .and_then(|c| c.into_iter().next())
+        .and_then(|c| c.message.content)
+        .unwrap_or_else(|| "No response from OpenAI".to_string());
+
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+    log::info!("REST API: OpenAI responded with {} chars in {}ms", ai_response.len(), duration_ms);
+
+    // Extract token usage
+    let (prompt_tokens, completion_tokens, total_tokens) = openai_response
+        .usage
+        .map(|u| (u.prompt_tokens, u.completion_tokens, u.total_tokens))
+        .unwrap_or((None, None, None));
+
+    // Log successful inference
+    state.add_inference_log(
+        "openai".to_string(), model.to_string(), "chat".to_string(),
+        true, Some(200), duration_ms,
+        prompt_tokens, completion_tokens, total_tokens,
+        None, None, Some(user_message_preview),
+        Some(serde_json::json!({
+            "response_length": ai_response.len(),
+            "history_length": request.history.len(),
+        })),
+    );
+
+    // Build updated history (use "model" role for frontend compatibility)
+    let mut updated_history = request.history.clone();
+    updated_history.push(ChatMessage {
+        role: "user".to_string(),
+        content: request.message,
+    });
+    updated_history.push(ChatMessage {
+        role: "model".to_string(),
+        content: ai_response.clone(),
+    });
+
+    Ok(Json(ChatResponse {
+        response: ai_response,
+        history: updated_history,
+    }))
+}
+
+/// List available OpenAI models
+/// 
+/// Returns a list of available OpenAI models, filtered to chat-capable models.
+#[utoipa::path(
+    get,
+    path = "/agent/openai/models",
+    responses(
+        (status = 200, description = "List of available OpenAI models", body = OpenAIModelsResponse),
+        (status = 400, description = "Bad request - API key not configured", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "agent"
+)]
+pub async fn openai_list_models_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<OpenAIModelsResponse>, (StatusCode, Json<ErrorResponse>)> {
+    log::info!("REST API: agent/openai/models called");
+
+    // Check if OpenAI API key is configured
+    if state.openai_api_key.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: "OpenAI API key not configured. Please set OPENAI_API_KEY in .env file.".to_string(),
+                code: 400,
+            }),
+        ));
+    }
+
+    // Call OpenAI API to list models
+    let client = reqwest::Client::new();
+    let response = client
+        .get("https://api.openai.com/v1/models")
+        .header("Authorization", format!("Bearer {}", state.openai_api_key))
+        .send()
+        .await
+        .map_err(|e| {
+            log::error!("REST API: Failed to call OpenAI models API: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("Failed to call OpenAI API: {}", e),
+                    code: 500,
+                }),
+            )
+        })?;
+
+    let status = response.status();
+    let response_text = response.text().await.map_err(|e| {
+        log::error!("REST API: Failed to read OpenAI models response: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Failed to read OpenAI response: {}", e), code: 500 }))
+    })?;
+
+    if !status.is_success() {
+        log::error!("REST API: OpenAI models API error ({}): {}", status, response_text);
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("OpenAI API error: {}", response_text), code: status.as_u16() })));
+    }
+
+    let api_response: OpenAIModelsApiResponse = serde_json::from_str(&response_text).map_err(|e| {
+        log::error!("REST API: Failed to parse OpenAI models response: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Failed to parse OpenAI response: {}", e), code: 500 }))
+    })?;
+
+    let models = api_response.data.unwrap_or_default();
+    let total = models.len();
+
+    log::info!("REST API: Retrieved {} OpenAI models", total);
+
+    Ok(Json(OpenAIModelsResponse { models, total }))
+}
+
+// ============ Gemini Models Handler ============
+
+/// List available Gemini models
+///
+/// Returns a list of all available Google Gemini models.
 #[utoipa::path(
     get,
     path = "/agent/models",
@@ -654,7 +1036,6 @@ pub async fn list_models_handler(
 ) -> Result<Json<GeminiModelsResponse>, (StatusCode, Json<ErrorResponse>)> {
     log::info!("REST API: agent/models called");
 
-    // Check if Gemini API key is configured
     if state.gemini_api_key.is_empty() || state.gemini_api_key == "YOUR_GEMINI_API_KEY_HERE" {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -665,65 +1046,35 @@ pub async fn list_models_handler(
         ));
     }
 
-    // Call Gemini API to list models
     let client = reqwest::Client::new();
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models?key={}",
         state.gemini_api_key
     );
 
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| {
-            log::error!("REST API: Failed to call Gemini models API: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: format!("Failed to call Gemini API: {}", e),
-                    code: 500,
-                }),
-            )
-        })?;
+    let response = client.get(&url).send().await.map_err(|e| {
+        log::error!("REST API: Failed to call Gemini models API: {}", e);
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Failed to call Gemini API: {}", e), code: 500 }))
+    })?;
 
     let status = response.status();
     let response_text = response.text().await.map_err(|e| {
         log::error!("REST API: Failed to read Gemini models response: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to read Gemini response: {}", e),
-                code: 500,
-            }),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Failed to read Gemini response: {}", e), code: 500 }))
     })?;
 
     if !status.is_success() {
         log::error!("REST API: Gemini models API error ({}): {}", status, response_text);
-        return Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Gemini API error: {}", response_text),
-                code: status.as_u16(),
-            }),
-        ));
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Gemini API error: {}", response_text), code: status.as_u16() })));
     }
 
     let api_response: GeminiModelsApiResponse = serde_json::from_str(&response_text).map_err(|e| {
         log::error!("REST API: Failed to parse Gemini models response: {}", e);
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                error: format!("Failed to parse Gemini response: {}", e),
-                code: 500,
-            }),
-        )
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: format!("Failed to parse Gemini response: {}", e), code: 500 }))
     })?;
 
     let models = api_response.models.unwrap_or_default();
     let total = models.len();
-
     log::info!("REST API: Retrieved {} Gemini models", total);
 
     Ok(Json(GeminiModelsResponse { models, total }))

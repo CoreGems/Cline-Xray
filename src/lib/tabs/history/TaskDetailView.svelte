@@ -1,6 +1,8 @@
 <script lang="ts">
   import { fetchTaskDetail, fetchTaskMessages, fetchSingleMessage, fetchTaskTools, fetchTaskThinking, fetchTaskFiles, fetchTaskSubtasks } from "./api";
   import type { TaskDetailResponse, ConversationMessage, PaginatedMessagesResponse, FullMessageResponse, ToolCallTimelineResponse, ToolCallTimelineEntry, ThinkingBlocksResponse, TaskFilesResponse, SubtasksResponse } from "./types";
+  import { navigationStore } from "../../stores/navigationStore.svelte";
+  import type { ChatAttachment } from "../agent/types";
 
   // ---- Props ----
   let { taskId, onBack }: { taskId: string; onBack: () => void } = $props();
@@ -66,6 +68,95 @@
   let thinkingMaxLength: number = $state(1000);
   let thinkingMinLength: number = $state(0);
   let thinkingElapsed = $state(0);
+
+  // ---- Ask LLM state ----
+  let askLlmLoading = $state(false);
+
+  async function askLlm() {
+    if (!detail) return;
+    askLlmLoading = true;
+    try {
+      const atts: ChatAttachment[] = [];
+      const d = detail;
+
+      // 1. Task prompt + subtask prompts
+      try {
+        const subtasksResp = await fetchTaskSubtasks(taskId);
+        if (subtasksResp.subtasks && subtasksResp.subtasks.length > 0) {
+          const allPrompts = subtasksResp.subtasks.map((s) =>
+            `${s.isInitialTask ? '🎯 Initial Task' : `💬 Feedback #${s.subtaskIndex}`} (${formatDate(s.timestamp)}):\n${s.prompt}`
+          ).join('\n\n---\n\n');
+          atts.push({ id: `prompts-${Date.now()}`, label: `All Prompts (${subtasksResp.subtasks.length})`, type: 'prompts', content: allPrompts, meta: { count: subtasksResp.subtasks.length } });
+        }
+      } catch (e: any) {
+        // Fallback to task prompt from detail
+        if (d.taskPrompt) {
+          atts.push({ id: `prompts-${Date.now()}`, label: 'Task Prompt', type: 'prompts', content: d.taskPrompt, meta: { count: 1 } });
+        }
+      }
+
+      // 2. Task summary (overview stats, model, environment)
+      const summaryLines = [
+        `Task ID: ${d.taskId}`,
+        `Started: ${formatDate(d.startedAt)}`,
+        `Ended: ${formatDate(d.endedAt)}`,
+        `Duration: ${formatDuration(d.startedAt, d.endedAt)}`,
+        `Messages: ${d.messageCount}`,
+        `Tool Calls: ${d.toolUseCount}`,
+        `Thinking Blocks: ${d.thinkingCount}`,
+        `Files in Context: ${d.filesInContextCount} (${d.filesEditedCount} edited, ${d.filesReadCount} read)`,
+        `API History Size: ${formatBytes(d.apiHistorySizeBytes)}`,
+        '',
+        '--- Tool Breakdown ---',
+        ...Object.entries(d.toolBreakdown).sort((a, b) => b[1] - a[1]).map(([name, count]) => `  ${name}: ${count}`),
+      ];
+      if (d.modelUsage.length > 0) {
+        summaryLines.push('', '--- Model Usage ---');
+        for (const mu of d.modelUsage) {
+          summaryLines.push(`  ${mu.modelId ?? '?'} via ${mu.modelProviderId ?? '?'} (${mu.mode ?? '?'})`);
+        }
+      }
+      if (d.environment.length > 0) {
+        const env = d.environment[0];
+        summaryLines.push('', '--- Environment ---');
+        summaryLines.push(`  OS: ${env.osName ?? '?'} ${env.osVersion ?? ''}`);
+        summaryLines.push(`  Host: ${env.hostName ?? '?'} ${env.hostVersion ?? ''}`);
+        summaryLines.push(`  Cline: ${env.clineVersion ?? '?'}`);
+      }
+      const summaryContent = summaryLines.join('\n');
+      atts.push({ id: `summary-${Date.now()}`, label: `Task Summary`, type: 'text', content: summaryContent, meta: {} });
+
+      // 3. Files in context
+      if (d.files.length > 0) {
+        const fileLines = d.files.map(f => {
+          const src = f.recordSource ?? 'unknown';
+          const state = f.recordState ?? '';
+          return `${f.path}  [${src}${state ? ', ' + state : ''}]`;
+        });
+        const filesContent = `Files in Context (${d.files.length}):\n` + fileLines.join('\n');
+        atts.push({ id: `files-${Date.now()}`, label: `Files in Context (${d.files.length})`, type: 'files', content: filesContent, meta: { count: d.files.length } });
+      }
+
+      // 4. Tool call timeline
+      if (d.toolCalls.length > 0) {
+        const toolLines = d.toolCalls.map(tc =>
+          `#${tc.callIndex} [msg#${tc.messageIndex}] ${tc.toolName}: ${tc.inputSummary.slice(0, 120)}${tc.inputSummary.length > 120 ? '…' : ''}`
+        );
+        const toolsContent = `Tool Call Timeline (${d.toolCalls.length} calls):\n` + toolLines.join('\n');
+        atts.push({ id: `tools-${Date.now()}`, label: `Tool Calls (${d.toolCalls.length})`, type: 'text', content: toolsContent, meta: { count: d.toolCalls.length } });
+      }
+
+      // 5. Focus chain (if exists)
+      if (d.focusChain) {
+        atts.push({ id: `focus-${Date.now()}`, label: 'Focus Chain', type: 'text', content: d.focusChain, meta: {} });
+      }
+
+      console.log('[askLlm] History task detail attachments:', atts.length, atts.map(a => a.label));
+      navigationStore.navigateToChat({ attachments: atts, timestamp: Date.now() });
+    } finally {
+      askLlmLoading = false;
+    }
+  }
 
   // ---- Subtasks state ----
   let subtasksData: SubtasksResponse | null = $state(null);
@@ -401,6 +492,14 @@
           <span class="bg-green-100 text-green-700 px-2 py-1 rounded font-medium">{detail.toolUseCount} tools</span>
           <span class="bg-purple-100 text-purple-700 px-2 py-1 rounded font-medium">{detail.thinkingCount} thinking</span>
           <span class="bg-gray-100 text-gray-700 px-2 py-1 rounded font-medium">{detail.filesInContextCount} files</span>
+          <button
+            onclick={askLlm}
+            disabled={askLlmLoading}
+            class="ml-2 px-3 py-1 rounded font-medium transition-colors {askLlmLoading ? 'bg-gray-200 text-gray-400 cursor-wait' : 'bg-indigo-500 text-white hover:bg-indigo-600'}"
+            title="Send task details to Agent Chat"
+          >
+            {askLlmLoading ? '⏳ Loading…' : '🤖 Ask LLM'}
+          </button>
         </div>
       </div>
 

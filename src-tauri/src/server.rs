@@ -33,6 +33,8 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/jira/list", get(handlers::jira_list_handler))
         .route("/agent/chat", post(handlers::chat_handler))
         .route("/agent/models", get(handlers::list_models_handler))
+        .route("/agent/openai/chat", post(handlers::openai_chat_handler))
+        .route("/agent/openai/models", get(handlers::openai_list_models_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Tool Runtime routes (Tools Console)
@@ -64,6 +66,8 @@ pub fn create_router(state: Arc<AppState>, tool_runtime: Arc<ToolRuntime>) -> Ro
         .route("/changes/tasks/:task_id/subtasks/:subtask_index/diff", get(shadow_git::subtask_diff_handler))
         .route("/changes/workspaces/:id/nuke", post(shadow_git::nuke_workspace_handler))
         .route("/changes/file-contents", post(shadow_git::file_contents_handler))
+        .route("/changes/ignore", get(shadow_git::get_ignore_handler))
+        .route("/changes/ignore", put(shadow_git::update_ignore_handler))
         .layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
     // Latest composite route (protected)

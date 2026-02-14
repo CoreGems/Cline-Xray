@@ -1,7 +1,7 @@
 // Changes Tab API Functions
 
 import { invoke } from "@tauri-apps/api/core";
-import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse, NukeWorkspaceResponse, FileContentsResponse } from "./types";
+import type { ApiInfo, WorkspacesResponse, TasksResponse, StepsResponse, DiffResult, LatestResponse, NukeWorkspaceResponse, FileContentsResponse, ChangesIgnoreResponse } from "./types";
 
 /**
  * Get API connection info from the Tauri backend
@@ -258,6 +258,54 @@ export async function fetchFileContents(
       body: JSON.stringify({ workspace, gitRef, paths })
     }
   );
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Fetch the current .changesignore patterns
+ * GET /changes/ignore
+ */
+export async function fetchChangesIgnore(): Promise<ChangesIgnoreResponse> {
+  const apiInfo = await getApiInfo();
+
+  const response = await fetch(`${apiInfo.base_url}/changes/ignore`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    }
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+    throw new Error(errorData.error || `HTTP error ${response.status}`);
+  }
+
+  return await response.json();
+}
+
+/**
+ * Update the .changesignore file
+ * PUT /changes/ignore
+ * @param rawContent - the raw file content to save (preserving comments)
+ */
+export async function updateChangesIgnore(rawContent: string): Promise<ChangesIgnoreResponse> {
+  const apiInfo = await getApiInfo();
+
+  const response = await fetch(`${apiInfo.base_url}/changes/ignore`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiInfo.token}`
+    },
+    body: JSON.stringify({ rawContent })
+  });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));

@@ -196,6 +196,18 @@ export interface FileContentsResponse {
   totalSize: number;
 }
 
+/** Response from GET /changes/ignore */
+export interface ChangesIgnoreResponse {
+  /** Parsed exclude patterns (comments and blanks stripped) */
+  patterns: string[];
+  /** Raw file content (for UI editing) */
+  rawContent: string;
+  /** Source: "file", "defaults (no file)", etc. */
+  source: string;
+  /** Absolute path to the .changesignore file */
+  filePath: string;
+}
+
 /** Available subtabs in the Changes tab */
 export type ChangesSubTab = 'Tasks' | 'Diff' | 'Latest' | 'Export';
 

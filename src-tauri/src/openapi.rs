@@ -21,6 +21,8 @@ use utoipa::{Modify, OpenApi};
         crate::api::handlers::jira_list_handler,
         crate::api::handlers::chat_handler,
         crate::api::handlers::list_models_handler,
+        crate::api::handlers::openai_chat_handler,
+        crate::api::handlers::openai_list_models_handler,
         // Tool runtime - Agent-facing endpoints only
         crate::tool_runtime::handlers::list_tools_handler,      // GET /tools - Discovery
         crate::tool_runtime::handlers::invoke_tool_handler,     // POST /tools/invoke - Execution
@@ -32,6 +34,8 @@ use utoipa::{Modify, OpenApi};
         crate::shadow_git::handlers::step_diff_handler,         // GET /changes/tasks/:taskId/steps/:index/diff
         crate::shadow_git::handlers::subtask_diff_handler,      // GET /changes/tasks/:taskId/subtasks/:subtaskIndex/diff
         crate::shadow_git::handlers::nuke_workspace_handler,    // POST /changes/workspaces/:id/nuke
+        crate::shadow_git::handlers::get_ignore_handler,        // GET /changes/ignore
+        crate::shadow_git::handlers::update_ignore_handler,     // PUT /changes/ignore
         // Conversation History
         crate::conversation_history::handlers::list_history_tasks_handler, // GET /history/tasks
         crate::conversation_history::handlers::get_task_detail_handler,    // GET /history/tasks/:taskId
@@ -56,6 +60,9 @@ use utoipa::{Modify, OpenApi};
             crate::api::handlers::ChatResponse,
             crate::api::handlers::GeminiModel,
             crate::api::handlers::GeminiModelsResponse,
+            crate::api::handlers::OpenAIChatRequest,
+            crate::api::handlers::OpenAIModel,
+            crate::api::handlers::OpenAIModelsResponse,
             // Tool runtime - Agent-facing schemas only
             crate::tool_runtime::ToolInvokeRequest,
             crate::tool_runtime::ToolCallSource,
@@ -77,6 +84,8 @@ use utoipa::{Modify, OpenApi};
             crate::shadow_git::DiffResult,
             crate::shadow_git::handlers::ChangesErrorResponse,
             crate::shadow_git::cleanup::NukeWorkspaceResponse,
+            crate::changesignore::ChangesIgnoreResponse,
+            crate::changesignore::ChangesIgnoreUpdateRequest,
             // Conversation History schemas
             crate::conversation_history::TaskHistorySummary,
             crate::conversation_history::TaskHistoryListResponse,
